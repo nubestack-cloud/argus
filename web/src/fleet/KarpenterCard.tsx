@@ -42,7 +42,7 @@ export function KarpenterCard({ clusterId }: { clusterId: string }) {
   if (!r || r.pools.length === 0) return null
   const stuck = r.demand.filter((d) => !d.verdicts.some((v) => v.fits))
   return (
-    <section className="card" aria-label="Karpenter capacity">
+    <section className="card card-compact" aria-label="Karpenter capacity">
       <div className="card-head">
         <h3>Karpenter</h3>
         <span className="card-head-meta">

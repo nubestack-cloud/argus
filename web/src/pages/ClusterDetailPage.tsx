@@ -1032,7 +1032,7 @@ export function ClusterDetailPage() {
             aside={tab === 'overview' ? <OverviewFreshness facts={cluster.facts} factsUpdatedAt={cluster.factsUpdatedAt} liveness={liveness} /> : undefined}
           >
           {tab === 'overview' && (
-          <>
+          <div className="cluster-overview-body">
           <ClusterOverviewSummary
             clusterId={id!}
             facts={cluster.facts}
@@ -1090,7 +1090,7 @@ export function ClusterDetailPage() {
               </p>
             )}
           </section>
-          </>
+          </div>
           )}
           {tab === 'incidents' && (
             <ClusterIncidentsTab

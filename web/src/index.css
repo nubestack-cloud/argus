@@ -11210,6 +11210,23 @@ summary > .fleet-group-heading {
   margin-bottom: var(--space-5);
 }
 
+/* The cluster Overview tab's cards (ClusterDetailPage): --gap-box between
+   every pair, from here rather than from each card's own margin, so an
+   optional card such as Karpenter's sits the same distance from both
+   neighbours. The summary's boxes space themselves with a --gap-box bottom
+   margin; a grid does not collapse margins, so its last box drops that margin
+   here rather than adding it to this gap. */
+.cluster-overview-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--gap-box);
+}
+
+.cluster-overview-body > .fleet-overview,
+.cluster-overview-body > .fleet-overview > :last-child {
+  margin-bottom: 0;
+}
+
 .fleet-summary-strip .metric-tile-value {
   font-size: var(--font-size-xl);
   overflow-wrap: anywhere;

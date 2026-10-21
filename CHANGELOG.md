@@ -56,6 +56,10 @@ See [Upgrading to 0.2.0](docs/INSTALL.md#upgrading-from-a-release-before-020) fo
 
 ### Fixed
 
+- **An incident waiting on a decision closes when what it is about is deleted.** It used to stay
+  open forever if its workload, or its object when it had none (a bare Pod), was deleted while a
+  plan awaited approval: the plan had nothing left to act on. A pod replaced by a rollout still
+  does not close it.
 - **Metrics, traffic and cost connect by themselves.** The agent chart finds a Prometheus the
   cluster already runs (Rancher monitoring, kube-prometheus-stack, a Prometheus server, a Thanos
   query, a VictoriaMetrics single node) at install and upgrade, by the same rules the Traffic tab

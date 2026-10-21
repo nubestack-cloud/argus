@@ -382,18 +382,7 @@
               ]
             },
             "backup": {
-              "type": "object",
-              "properties": {
-                "beforeUpgrade": {
-                  "type": "boolean"
-                },
-                "keep": {
-                  "type": [
-                    "integer",
-                    "string"
-                  ]
-                }
-              }
+              "type": "object"
             }
           }
         },

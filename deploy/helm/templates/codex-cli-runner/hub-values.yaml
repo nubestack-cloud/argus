@@ -7,7 +7,7 @@
 ingress:
   host: CHANGE_ME_HUB_HOST
   clusterIssuer: CHANGE_ME_ISSUER   # your cert-manager ClusterIssuer; or remove it and set tls.secretName
-# Bundled Postgres (10Gi, dumped before every upgrade) is the default. For
+# Bundled Postgres (10Gi, no backups of its own) is the default. For
 # production, use postgres.mode=external (docs/INSTALL.md, "External Postgres").
 # The CLI runner is deployed because a model credential is given. Keep the
 # credential out of this file: pass it with the --set-file above, or create

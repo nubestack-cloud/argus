@@ -42,13 +42,11 @@ EXTRA = {
         'cliRunner.enabled': {'enum': ['auto', True, False, 'true', 'false']},
         # The agent chart's values; its own schema validates them.
         'localAgent': {'type': 'object'},
-        # Older charts had a nightly backup here (enabled, schedule,
-        # retention, persistence, ...); those keys are accepted and ignored so
-        # a values file written for them still upgrades.
-        'postgres.bundled.backup': {'type': 'object', 'properties': {
-            'beforeUpgrade': {'type': 'boolean'},
-            'keep': {'type': ['integer', 'string']},
-        }},
+        # Older charts had a nightly backup and then a pre-upgrade dump here
+        # (enabled, schedule, beforeUpgrade, keep, ...). Neither exists now;
+        # the keys are accepted and ignored so a values file written for them
+        # still upgrades.
+        'postgres.bundled.backup': {'type': 'object'},
     },
     'argus-agent': {},
 }

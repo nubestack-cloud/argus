@@ -211,16 +211,12 @@ postgres:
     # limit above). The container default of 64Mi is too small for concurrent
     # parallel queries.
     sharedMemory: 512Mi
-
-    # A dump of the database before every `helm upgrade`, on the database's
-    # own volume (backups/), so a bad upgrade can be rolled back: migrations
-    # only move forward. Not a backup policy: it shares the database's disk.
-    # For data you must not lose, use postgres.mode=external with your
-    # database's own backups.
-    backup:
-      beforeUpgrade: true
-      # How many pre-upgrade dumps to keep (each about a tenth of the database).
-      keep: 2
+    # No backups of its own: before an upgrade, take one off the cluster
+    # (docs/INSTALL.md, "Upgrading"). For data you must not lose, use
+    # postgres.mode=external with your database's own backups.
+    # Ignored. Older charts' backup settings (a nightly CronJob, then a
+    # pre-upgrade dump) are accepted here so their values files still upgrade.
+    backup: {}
 
   external:
     # Secret holding the two connection strings. Keys are configurable because

@@ -18,6 +18,8 @@ spec:
     {{- include "argus-hub.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: postgres
 ---
+{{- $storage := include "argus-hub.postgresStorage" . }}
+{{- $ephemeral := hasPrefix "ephemeral:" $storage }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -106,11 +108,11 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: {{ .Values.postgres.bundled.sharedMemory | quote }}
-        {{- if not .Values.postgres.bundled.persistence.enabled }}
+        {{- if $ephemeral }}
         - name: data
           emptyDir: {}
         {{- end }}
-  {{- if .Values.postgres.bundled.persistence.enabled }}
+  {{- if not $ephemeral }}
   {{- /*
     Kubernetes refuses any change to an existing StatefulSet's volume
     template, so an upgrade keeps the one the database was created with: a
@@ -119,12 +121,11 @@ spec:
     ("Resizing the database volume"), which deletes this StatefulSet first.
   */}}
   {{- $size := .Values.postgres.bundled.persistence.size }}
-  {{- $class := .Values.postgres.bundled.persistence.storageClass }}
+  {{- $class := index (splitList ":" $storage) 1 }}
   {{- with lookup "apps/v1" "StatefulSet" .Release.Namespace (printf "%s-postgres" $fullname) }}
   {{- range .spec.volumeClaimTemplates }}
   {{- if eq .metadata.name "data" }}
   {{- $size = .spec.resources.requests.storage }}
-  {{- $class = .spec.storageClassName | default "" }}
   {{- end }}
   {{- end }}
   {{- end }}

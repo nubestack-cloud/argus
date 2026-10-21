@@ -110,6 +110,6 @@ than one pod. In practice:
 Multi-replica hubs, with tunnels shared across pods, are on the roadmap. Until then this is a stated
 limit, not a configuration option: the chart refuses `replicaCount` other than 1.
 
-**Bundled Postgres is one pod with no scheduled backups** (only a dump before each upgrade). For production, use a managed Postgres or
+**Bundled Postgres is one pod with no backups of its own** (take a copy off the cluster before each upgrade). For production, use a managed Postgres or
 an operator such as CloudNativePG (`postgres.mode=external`; see "External Postgres" in
 [INSTALL.md](INSTALL.md#external-postgres)) so the database has its own replication and point-in-time recovery.

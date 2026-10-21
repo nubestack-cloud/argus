@@ -1,6 +1,22 @@
 ARGUS hub {{ .Chart.AppVersion }} installed as {{ .Release.Name }}.
 
 {{- $fullname := include "argus-hub.fullname" . }}
+{{- if eq .Values.postgres.mode "bundled" }}
+{{- $storage := include "argus-hub.postgresStorage" . }}
+{{- if hasPrefix "picked:" $storage }}
+
+DATABASE STORAGE: this cluster has no default StorageClass, so the database
+volume uses "{{ trimPrefix "picked:" $storage }}", one of its StorageClasses. To choose a different one, set
+postgres.bundled.persistence.storageClass on a new install.
+{{- else if eq $storage "ephemeral:none" }}
+
+WARNING: this cluster has no StorageClass, so the database runs on a temporary
+volume and its data is LOST whenever the Postgres pod restarts. Fine for a
+trial. To keep data: install a storage provisioner (any CSI driver, or
+local-path-provisioner), uninstall, delete the data, and install again; or use
+postgres.mode=external.
+{{- end }}
+{{- end }}
 
 1. SIGN IN
 {{ if or (include "argus-hub.ingressEnabled" .) .Values.httpRoute.host }}
@@ -96,10 +112,10 @@ ARGUS hub {{ .Chart.AppVersion }} installed as {{ .Release.Name }}.
 
 6. WHAT IS NOT SET UP FOR YOU
 {{ if eq .Values.postgres.mode "bundled" }}
-   - No scheduled backups. Before every helm upgrade the database is dumped
-     onto its own volume, so a bad upgrade can be rolled back
-     (docs/INSTALL.md, "Rolling back an upgrade"). For data you must not lose,
-     use postgres.mode=external with your database's own backups.
+   - No backups. Before an upgrade, take a copy off the cluster (one command,
+     docs/INSTALL.md "Upgrading"); it is also how a bad upgrade is rolled back.
+     For data you must not lose, use postgres.mode=external with your
+     database's own backups.
 {{- end }}
    - No cost ceiling and no model pricing: spend is unbounded until you set them.
    - Storm protection is off: one cluster can open unlimited new incidents.

@@ -16,7 +16,7 @@ image:
   # compromised publishing credential); a digest cannot, so a chart version
   # always installs the same image. Clear it to pull by `tag`, for example a
   # locally built image, and set pullPolicy to Always if the tag moves.
-  digest: "sha256:3be9ae938d0fd1c56f43da647537edb1be498a6d9a1616301c8660c7b3119560"
+  digest: "sha256:0395078a71218f58c862a5e236958371ef6fbec8a3de86fd8915ca79d2dbffb8"
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 

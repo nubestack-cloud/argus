@@ -96,7 +96,7 @@ postgres.mode=external.
    For an API provider, that is all you need.
 
    For a CLI runner, upgrade with a model credential (for example
-   --set-file cliRunner.modelCredential.claudeCodeOauthToken=<file>): the
+   --set-file cliRunner.modelCredential.anthropicApiKey=<file>): the
    runner is deployed whenever one is supplied (cliRunner.enabled=auto), and it
    also sets the hub's MCP listener, which the CLI backend needs — configuring a
    "cli" provider without it fails at analyze time.

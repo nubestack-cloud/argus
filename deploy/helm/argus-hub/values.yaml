@@ -291,6 +291,8 @@ cliRunner:
   modelCredential:
     existingSecret: ""
     anthropicApiKey: ""
+    # A Claude Pro/Max token from `claude setup-token`: one person's own plan,
+    # for their own use. For a team or automatic investigation, use an API key.
     claudeCodeOauthToken: ""
     openaiApiKey: ""
   # "subscription" declares that the credential is flat-rate billed, which is

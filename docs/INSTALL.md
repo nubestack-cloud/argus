@@ -111,29 +111,30 @@ printf '%s' "$TOKEN" > ~/.argus/model-credential && unset TOKEN && chmod 600 ~/.
 > [!TIP]
 > **How to get the credential**, on any machine with a browser:
 >
-> - **Claude subscription (Pro or Max):** on a machine with Claude Code
->   (`npm install -g @anthropic-ai/claude-code`), run `claude setup-token`, sign in in the browser it
->   opens, and copy the token it prints. It starts `sk-ant-oat01-`.
 > - **Anthropic API key:** [console.anthropic.com](https://console.anthropic.com/) → **API keys** →
->   **Create key**. It starts `sk-ant-api03-`.
+>   **Create key**. It starts `sk-ant-api03-`. Use this for a team, and for automatic investigation.
+> - **Your own Claude subscription (Pro or Max), for your own use:** on a machine with Claude Code
+>   (`npm install -g @anthropic-ai/claude-code`), run `claude setup-token`, sign in in the browser it
+>   opens, and copy the token it prints. It starts `sk-ant-oat01-`. Anthropic's
+>   [terms](https://code.claude.com/docs/en/legal-and-compliance) expect a plan to be used by the person who holds it, so
+>   don't share one across a team.
 > - **Codex:** an OpenAI API key, from [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
 >   → **Create new secret key**. It starts `sk-`.
 
-Then upgrade the hub with it. For a Claude subscription:
+Then upgrade the hub with it. For an Anthropic API key:
 
 ```bash
 helm upgrade argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --version 0.2.0 \
   -n argus-system --reset-then-reuse-values \
-  --set-file cliRunner.modelCredential.claudeCodeOauthToken=$HOME/.argus/model-credential \
-  --set cliRunner.authMode=subscription
+  --set-file cliRunner.modelCredential.anthropicApiKey=$HOME/.argus/model-credential
 ```
 
 For the others, swap the `--set-file` option:
 
 | You have | Option |
 |---|---|
-| A Claude subscription | `cliRunner.modelCredential.claudeCodeOauthToken`, plus `--set cliRunner.authMode=subscription` |
 | An Anthropic API key | `cliRunner.modelCredential.anthropicApiKey` |
+| Your own Claude subscription | `cliRunner.modelCredential.claudeCodeOauthToken`, plus `--set cliRunner.authMode=subscription` |
 | An OpenAI API key (Codex) | `cliRunner.modelCredential.openaiApiKey` |
 | The credential in a Secret already | `cliRunner.modelCredential.existingSecret`, with key `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` |
 

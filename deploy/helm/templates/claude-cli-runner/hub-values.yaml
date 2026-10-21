@@ -1,7 +1,7 @@
 # Values for argus-hub-chart:
 #   helm upgrade --install argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart \
 #     --version 0.2.0 -n argus-system --create-namespace -f hub-values.yaml \
-#     --set-file cliRunner.modelCredential.claudeCodeOauthToken=<file>   # or anthropicApiKey
+#     --set-file cliRunner.modelCredential.anthropicApiKey=<file>
 # Images are pinned by the chart version; leave image.* unset.
 # The UI, the API and the agents' tunnel are all served at this host.
 ingress:
@@ -11,8 +11,10 @@ ingress:
 # production, use postgres.mode=external (docs/INSTALL.md, "External Postgres").
 # The CLI runner is deployed because a model credential is given. Keep the
 # credential out of this file: pass it with the --set-file above, or create
-#   kubectl -n argus-system create secret generic argus-model-credential --from-file=CLAUDE_CODE_OAUTH_TOKEN=<file>
+#   kubectl -n argus-system create secret generic argus-model-credential --from-file=ANTHROPIC_API_KEY=<file>
 # and set cliRunner.modelCredential.existingSecret: argus-model-credential instead.
-cliRunner:
-  authMode: subscription     # only for a Claude subscription token; remove for an API key
+# Your own Claude subscription token instead of an API key (claudeCodeOauthToken,
+# key CLAUDE_CODE_OAUTH_TOKEN) is for one person's own use, and also needs:
+# cliRunner:
+#   authMode: subscription
 # Then in Settings -> AI providers: Kind CLI, Runner URL http://argus-hub-cli-runner:8090, Agent claude.

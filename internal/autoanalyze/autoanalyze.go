@@ -2306,6 +2306,20 @@ func staleClosureBlocked(state string, hasPR, prMerged, prClosedUnmerged bool) b
 	return hasPR && !prMerged && !prClosedUnmerged
 }
 
+// staleClosureRefused is closeStaleIncident's decision on the re-read row:
+// whether to refuse the closure. Everything staleClosureBlocked blocks is
+// refused, except a pending approval that has not moved since it was
+// selected, which two closures may withdraw because the question is moot: the
+// fault cleared and the workload reads healthy (cleared), or the workload, or
+// the object itself when it has none, is gone (subjectGoneCloses). An open
+// pull request still refuses either.
+func staleClosureRefused(selectedState, liveState string, hasPR, prMerged, prClosedUnmerged, cleared bool) bool {
+	if liveState == orchestrator.StateAwaitingApproval && liveState == selectedState && (cleared || subjectGoneCloses(selectedState)) {
+		return hasPR && !prMerged && !prClosedUnmerged
+	}
+	return staleClosureBlocked(liveState, hasPR, prMerged, prClosedUnmerged)
+}
+
 // closeStaleIncident resolves one incident, in its own transaction.
 //
 // Per-incident rather than one transaction for the batch: a single illegal
@@ -2365,20 +2379,13 @@ func (p *Poller) closeStaleIncident(ctx context.Context, c staleCandidate, reaso
 		logger.ErrorContext(ctx, "closing a stale incident: re-read before closing failed", logging.Err(err))
 		return
 	}
-	blocked := staleClosureBlocked(liveState, prNumber != nil, prMergedAt != nil, prClosedUnmergedAt != nil)
-	if cleared != nil && liveState == orchestrator.StateAwaitingApproval && liveState == c.State {
-		// The one closure allowed to withdraw a pending approval: the fault
-		// cleared and the workload reads healthy, so the question is moot.
-		// Recorded on the timeline (below), not silent. An open pull
-		// request still blocks it.
-		blocked = prNumber != nil && prMergedAt == nil && prClosedUnmergedAt == nil
-	}
-	if blocked {
+	pendingApproval := liveState == orchestrator.StateAwaitingApproval && liveState == c.State
+	if staleClosureRefused(c.State, liveState, prNumber != nil, prMergedAt != nil, prClosedUnmergedAt != nil, cleared != nil) {
 		logger.InfoContext(ctx, "stale incident not closed: it now has an action in flight, and closing it would abandon that action",
 			slog.String("live_state", liveState), slog.String("state_when_selected", c.State))
 		return
 	}
-	if cleared != nil && (liveState != c.State || liveLastSeen.After(c.LastSeen)) {
+	if (cleared != nil || pendingApproval) && (liveState != c.State || liveLastSeen.After(c.LastSeen)) {
 		logger.InfoContext(ctx, "cleared incident not closed: it moved or recurred while this sweep was checking it",
 			slog.String("live_state", liveState), slog.Time("last_seen", liveLastSeen))
 		return

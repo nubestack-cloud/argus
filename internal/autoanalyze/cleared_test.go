@@ -234,3 +234,30 @@ func TestSubjectGoneClosesOnlyPendingApprovals(t *testing.T) {
 		}
 	}
 }
+
+// The re-check under the row lock: a pending approval whose subject is gone
+// closes unless a pull request is open, and anything that moved, or any other
+// action in flight, is still refused.
+func TestStaleClosureRefused(t *testing.T) {
+	aa, det := orchestrator.StateAwaitingApproval, orchestrator.StateDetected
+	cases := []struct {
+		name                         string
+		selected, live               string
+		hasPR, merged, closed, clear bool
+		refused                      bool
+	}{
+		{"pending approval, subject gone", aa, aa, false, false, false, false, false},
+		{"pending approval, fault cleared", aa, aa, false, false, false, true, false},
+		{"pending approval, subject gone, pull request open", aa, aa, true, false, false, false, true},
+		{"pending approval, subject gone, pull request merged", aa, aa, true, true, false, false, false},
+		{"became a pending approval after selection", det, aa, false, false, false, false, true},
+		{"executing", aa, orchestrator.StateExecuting, false, false, false, false, true},
+		{"detected, subject gone", det, det, false, false, false, false, false},
+		{"awaiting merge", orchestrator.StateAwaitingMerge, orchestrator.StateAwaitingMerge, false, false, false, false, true},
+	}
+	for _, c := range cases {
+		if got := staleClosureRefused(c.selected, c.live, c.hasPR, c.merged, c.closed, c.clear); got != c.refused {
+			t.Errorf("%s: refused=%v, want %v", c.name, got, c.refused)
+		}
+	}
+}

@@ -95,4 +95,4 @@ helm template argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --v
 ```
 
 User guide (installation and use): <https://argus.nubestack.com/>. Install and upgrade reference:
-[`docs/INSTALL.md`](https://github.com/nubestack-collab/ARGUS/blob/main/docs/INSTALL.md).
+[`docs/INSTALL.md`](https://github.com/nubestack-cloud/argus/blob/main/docs/INSTALL.md).

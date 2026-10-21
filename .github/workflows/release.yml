@@ -271,7 +271,7 @@ jobs:
       # Verify with:
       #   cosign verify <ref> \
       #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-      #     --certificate-identity-regexp '^https://github.com/nubestack-collab/ARGUS/\.github/workflows/release\.yml@refs/tags/v'
+      #     --certificate-identity-regexp '^https://github.com/nubestack-cloud/argus/\.github/workflows/release\.yml@refs/tags/v'
       - name: sign packaged charts (blobs)
         run: |
           for f in dist/charts/*.tgz; do

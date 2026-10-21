@@ -10,7 +10,7 @@ appVersion: "0.2.0"
 kubeVersion: ">=1.29.0-0"
 home: https://argus.nubestack.com/
 sources:
-  - https://github.com/nubestack-collab/ARGUS
+  - https://github.com/nubestack-cloud/argus
 icon: https://argus.nubestack.com/images/argus-logo.svg
 keywords: [kubernetes, incident-management, aiops, gitops, remediation, sre]
 maintainers:
@@ -24,7 +24,7 @@ annotations:
     - name: Documentation
       url: https://argus.nubestack.com/
     - name: Source
-      url: https://github.com/nubestack-collab/ARGUS
+      url: https://github.com/nubestack-cloud/argus
   artifacthub.io/images: |
     - name: argus-agent
       image: nubestack/argus-agent

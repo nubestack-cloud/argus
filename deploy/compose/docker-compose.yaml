@@ -109,6 +109,8 @@ services:
       ARGUS_TUNNEL_PUBLIC_ENDPOINT: "${ARGUS_TUNNEL_PUBLIC_ENDPOINT:-}"
       ARGUS_TUNNEL_SANS: "${ARGUS_TUNNEL_SANS:-localhost,127.0.0.1,hub-api}"
       ARGUS_PUBLIC_API_URL: "${ARGUS_PUBLIC_API_URL:-}"
+      # The agent chart version the Enroll dialog pins, as the Helm chart sets it.
+      ARGUS_AGENT_CHART_VERSION: "${ARGUS_AGENT_CHART_VERSION:-}"
       # Fixes the bootstrap super-admin's password (internal/authz/bootstrap.go)
       # to a known dev-only value instead of a fresh random one every time the
       # Postgres volume is wiped — real production installs still leave this

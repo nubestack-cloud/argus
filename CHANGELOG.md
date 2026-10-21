@@ -56,6 +56,11 @@ See [Upgrading to 0.2.0](docs/INSTALL.md#upgrading-from-a-release-before-020) fo
 
 ### Fixed
 
+- **Metrics, traffic and cost connect by themselves.** The agent chart finds a Prometheus the
+  cluster already runs (Rancher monitoring, kube-prometheus-stack, a Prometheus server, a Thanos
+  query, a VictoriaMetrics single node) at install and upgrade, by the same rules the Traffic tab
+  uses to suggest one, and the install notes name it. `metrics.prometheusService` still chooses
+  one, and `metrics.autoDetect=false` turns it off.
 - **The charts install on any conformant Kubernetes without cluster-specific settings.** On
   OpenShift (detected, or `global.openshift=true`) the pods leave their user and group IDs for the
   cluster to assign, as its restricted policy requires. With no default IngressClass the hub's

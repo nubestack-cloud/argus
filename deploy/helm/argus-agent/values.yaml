@@ -197,11 +197,18 @@ helmStatus:
   enabled: true
 
 metrics:
-  # Opt-in, per cluster: the query_metrics investigation tool. Not another
-  # identity: argus-investigate gains `get` on the proxy subresource of the
-  # one Prometheus Service named below, so the API server proxies the query
-  # and the agent needs no network route to Prometheus. Leave it empty and
-  # query_metrics is simply unavailable.
+  # Workload metrics, traffic and cost, from a Prometheus the cluster already
+  # runs. Not another identity: argus-investigate gains `get` on the proxy
+  # subresource of that one Prometheus Service, so the API server proxies the
+  # query and the agent needs no network route to Prometheus.
+  #
+  # autoDetect (the default) finds one at install and upgrade, by the same
+  # rules the Traffic tab uses to suggest one: a Prometheus server (Rancher
+  # monitoring, kube-prometheus-stack, prometheus-operated, ...), else a
+  # Thanos query, else a VictoriaMetrics single node. prometheusService or
+  # external below, when set, are used instead; autoDetect=false with neither
+  # leaves metrics off.
+  autoDetect: true
   #
   # external: a Prometheus-compatible endpoint that is not a Service in this
   # cluster (a managed or central Prometheus, Thanos, Mimir, VictoriaMetrics).

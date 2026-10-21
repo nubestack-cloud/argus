@@ -74,7 +74,9 @@ kubectl -n argus-system rollout status deploy/argus-hub --timeout=5m
 ```
 
 You now have the hub, its database, and an agent for this cluster. The agent connects by itself
-within a minute and appears in ARGUS as `local`.
+within a minute and appears in ARGUS as `local`. If the cluster runs Prometheus
+(Rancher monitoring, kube-prometheus-stack and the like), the agent connects to it by itself for
+metrics, traffic and cost; the install notes name the one it found.
 
 ## Step 2: Sign in
 
@@ -160,6 +162,13 @@ helm install argus-agent oci://registry-1.docker.io/nubestack/argus-agent-chart 
 ```
 
 When the cluster appears in **Clusters**, click **Accept**.
+
+> [!WARNING]
+> **A cluster that already runs an agent for another hub** needs it removed first:
+> `helm -n argus-system uninstall argus-agent`, then
+> `kubectl -n argus-system delete secret argus-agent-identity --ignore-not-found`. Otherwise the
+> install stops with "cannot reuse a name that is still in use", and the old agent keeps an
+> identity the new hub cannot verify.
 
 **Many clusters.** Open **Clusters → Fleet tokens** and issue one token for all of them. Tick
 **Accept automatically** if you don't want to accept each cluster by hand. Put the token in every

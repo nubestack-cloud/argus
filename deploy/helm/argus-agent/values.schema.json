@@ -278,6 +278,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "autoDetect": {
+          "type": "boolean"
+        },
         "external": {
           "type": "object",
           "additionalProperties": false,

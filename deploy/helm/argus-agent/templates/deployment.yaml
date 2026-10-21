@@ -181,7 +181,8 @@ spec:
             # see templates/remediate-deployment.yaml. Giving it to the
             # read-only investigation agent would hand the path the model can
             # reach a credential it has no use for.
-            {{- if and .Values.metrics.prometheusService.namespace .Values.metrics.prometheusService.name }}
+            {{- $prom := include "argus-agent.prometheusService" . | fromJson }}
+            {{- if $prom.name }}
             # BACKLOG.md C4: tells internal/agent where to find the
             # Prometheus this cluster's query_metrics tool should query — see
             # templates/metrics.yaml for the RBAC grant that makes reaching it
@@ -190,11 +191,11 @@ spec:
             # serviceAccountName, so there is no matching Secret volume mount
             # below.
             - name: ARGUS_METRICS_PROMETHEUS_NAMESPACE
-              value: {{ .Values.metrics.prometheusService.namespace | quote }}
+              value: {{ $prom.namespace | quote }}
             - name: ARGUS_METRICS_PROMETHEUS_SERVICE
-              value: {{ .Values.metrics.prometheusService.name | quote }}
+              value: {{ $prom.name | quote }}
             - name: ARGUS_METRICS_PROMETHEUS_PORT
-              value: {{ .Values.metrics.prometheusService.port | quote }}
+              value: {{ int $prom.port | quote }}
             {{- end }}
             {{- with .Values.metrics.external }}{{- if .url }}
             # PROJECT.md PG17: a Prometheus-compatible endpoint outside the

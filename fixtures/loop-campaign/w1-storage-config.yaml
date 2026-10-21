@@ -1,0 +1,179 @@
+# Loop campaign, wave 1 — storage, config, quota, policy and lifecycle faults (README.md).
+#
+#  S06 PVC naming a StorageClass that does not exist, mounted by a Deployment
+#      → PVCPendingTimeout + pod Pending → incident
+#  S19 PV released and retained (bound PVC deleted later, w1 action) → persistentvolume-released-stuck (risk)
+#  S23 Pod mounting a Secret that does not exist → FailedMount → incident
+#  S24 ResourceQuota (own namespace) a Deployment cannot fit → FailedCreate "exceeded quota"
+#      + resourcequota-at-hard-limit (risk) → incident from FailedCreate
+#  S25 LimitRange (own namespace) the Deployment's requests violate → FailedCreate → incident
+#  S26 PDB that allows no disruption → pdb-blocks-all-disruptions (risk, negative control)
+#  S27 HPA whose scale target does not exist → HPAScalingBlocked
+#  S28 ConfigMap with a finalizer nothing removes, deleted (w1 action) → stuck finalizer (10 min)
+#  S30 Validating webhook (failurePolicy Ignore, this namespace only) whose Service has no
+#      endpoints → WebhookBackingServiceUnreachable
+#  S31 cert-manager Certificate naming an Issuer that does not exist → Ready=False
+#      (generic condition: anomaly, NOT an incident — negative control)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: s06-data, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S06}}
+spec:
+  storageClassName: argus-loop-fast-ssd
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 1Gi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s06-uses-pvc, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S06}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: s06-uses-pvc}}
+  template:
+    metadata: {labels: {app: s06-uses-pvc}}
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+          volumeMounts: [{name: data, mountPath: /data}]
+      volumes: [{name: data, persistentVolumeClaim: {claimName: s06-data}}]
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata: {name: argus-loop-s19-pv, labels: {loop.argus.io/scenario: S19}}
+spec:
+  capacity: {storage: 1Gi}
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: argus-loop-manual
+  hostPath: {path: /tmp/argus-loop-s19}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: s19-claim, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S19}}
+spec:
+  storageClassName: argus-loop-manual
+  volumeName: argus-loop-s19-pv
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 1Gi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s23-missing-secret, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S23}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: s23-missing-secret}}
+  template:
+    metadata: {labels: {app: s23-missing-secret}}
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+          volumeMounts: [{name: tls, mountPath: /etc/tls}]
+      volumes: [{name: tls, secret: {secretName: s23-tls}}]
+---
+apiVersion: v1
+kind: Namespace
+metadata: {name: argus-loop-quota, labels: {argus.io/purpose: loop-campaign}}
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata: {name: s24-quota, namespace: argus-loop-quota, labels: {loop.argus.io/scenario: S24}}
+spec:
+  hard: {pods: "1"}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s24-workers, namespace: argus-loop-quota, labels: {loop.argus.io/scenario: S24}}
+spec:
+  replicas: 3
+  selector: {matchLabels: {app: s24-workers}}
+  template:
+    metadata: {labels: {app: s24-workers}}
+    spec:
+      containers: [{name: app, image: busybox:1.36, command: ["sh", "-c", "sleep 3600"]}]
+---
+apiVersion: v1
+kind: Namespace
+metadata: {name: argus-loop-limits, labels: {argus.io/purpose: loop-campaign}}
+---
+apiVersion: v1
+kind: LimitRange
+metadata: {name: s25-limits, namespace: argus-loop-limits, labels: {loop.argus.io/scenario: S25}}
+spec:
+  limits:
+    - type: Container
+      max: {cpu: 100m}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s25-greedy, namespace: argus-loop-limits, labels: {loop.argus.io/scenario: S25}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: s25-greedy}}
+  template:
+    metadata: {labels: {app: s25-greedy}}
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+          resources: {requests: {cpu: 500m}, limits: {cpu: 500m}}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: s26-pdb, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S26}}
+spec:
+  minAvailable: 1
+  selector: {matchLabels: {app: s12-web}}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: s27-hpa, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S27}}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: s27-renamed-away}
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource: {name: cpu, target: {type: Utilization, averageUtilization: 70}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: s28-finalized
+  namespace: argus-loop-test
+  labels: {loop.argus.io/scenario: S28}
+  finalizers: [loop.argus.io/never-removed]
+data: {k: v}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: s30-policy-webhook, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S30}}
+spec:
+  selector: {app: s30-policy-server}
+  ports: [{port: 443, targetPort: 8443}]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata: {name: argus-loop-s30, labels: {loop.argus.io/scenario: S30}}
+webhooks:
+  - name: s30.argus-loop.example
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: Ignore
+    timeoutSeconds: 2
+    namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: argus-loop-test}}
+    rules:
+      - {apiGroups: [""], apiVersions: [v1], operations: [CREATE], resources: [configmaps]}
+    clientConfig:
+      service: {name: s30-policy-webhook, namespace: argus-loop-test, path: /validate, port: 443}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata: {name: s31-api-tls, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S31}}
+spec:
+  secretName: s31-api-tls
+  dnsNames: [s31.argus-loop.example]
+  issuerRef: {name: s31-letsencrypt-prod, kind: Issuer}

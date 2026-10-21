@@ -1,0 +1,101 @@
+{
+  "id": "argocd-admission-denied-pr-fix",
+  "description": "PG9 (2026-10-13 parity review): gitopsinsight.FailureClassAdmissionDenied — a policy webhook rejected the manifest Argo tried to apply. The only durable fix is correcting the manifest in Git so it satisfies the policy; on the pullRequest route that is OpenPR (internal/resolution.PermittedActionTypes), never a live patch that the next sync would just overwrite anyway.",
+  "finding": {
+    "detectorId": "k8s-sweep",
+    "severity": "high",
+    "namespace": "argocd",
+    "objectName": "fraud-detector",
+    "reason": "GitOpsSyncFailed",
+    "message": "Argo CD cannot apply this Application's manifests (phase Failed, 1 retry, revision c3d4e5f): admission webhook \"validation.gatekeeper.sh\" denied the request: missing label",
+    "occurrenceCount": 1
+  },
+  "toolResponses": {
+    "get_events": [
+      {
+        "match": {},
+        "data": [
+          {
+            "namespace": "argocd",
+            "involvedObjectKind": "Application",
+            "involvedObjectName": "fraud-detector",
+            "reason": "OperationError",
+            "message": "Sync operation failed: admission webhook denied the request",
+            "type": "Warning",
+            "count": 1,
+            "lastTimestamp": "2026-10-13T11:30:00Z"
+          }
+        ]
+      }
+    ],
+    "describe_resource": [
+      {
+        "match": {},
+        "data": {
+          "object": {
+            "apiVersion": "argoproj.io/v1alpha1",
+            "kind": "Application",
+            "metadata": { "name": "fraud-detector", "namespace": "argocd" },
+            "spec": {
+              "source": { "repoURL": "https://github.com/acme/platform-gitops.git", "path": "apps/fraud-detector", "targetRevision": "main" },
+              "destination": { "server": "https://kubernetes.default.svc", "namespace": "risk-prod" },
+              "syncPolicy": { "automated": { "selfHeal": true } }
+            },
+            "status": {
+              "sync": { "status": "OutOfSync", "revision": "c3d4e5f6a7b8" },
+              "health": { "status": "Missing" },
+              "operationState": {
+                "phase": "Failed",
+                "message": "admission webhook \"validation.gatekeeper.sh\" denied the request: missing label \"cost-center\"",
+                "retryCount": 1,
+                "syncResult": { "revision": "c3d4e5f6a7b8" }
+              }
+            }
+          },
+          "events": [],
+          "gitOpsHeadline": {
+            "headline": "The last sync failed: admission webhook \"validation.gatekeeper.sh\" denied the request: missing label \"cost-center\".",
+            "causes": ["An admission webhook rejected the apply. Check the webhook's policy or its target server."]
+          },
+          "parsedFailure": {
+            "class": "admissionDenied",
+            "cause": "An admission webhook rejected the apply. Check the webhook's policy or its target server.",
+            "retryCount": 1
+          }
+        }
+      }
+    ],
+    "get_gitops_ownership": [
+      {
+        "match": {},
+        "data": {
+          "managed_by": "argocd",
+          "app_ref": { "kind": "Application", "namespace": "argocd", "name": "fraud-detector" },
+          "repo_target": { "repo_url": "https://github.com/acme/platform-gitops.git", "path": "apps/fraud-detector", "revision": "c3d4e5f6a7b8", "revision_pinned": true }
+        }
+      }
+    ],
+    "list_repo_files": [
+      {
+        "match": {},
+        "data": { "files": ["apps/fraud-detector/deployment.yaml"] }
+      }
+    ],
+    "read_repo_file": [
+      {
+        "match": {},
+        "data": { "path": "apps/fraud-detector/deployment.yaml", "content": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: fraud-detector\n  namespace: risk-prod\n  labels:\n    app: fraud-detector\nspec:\n  replicas: 2\n", "totalLines": 8, "truncated": false }
+      }
+    ]
+  },
+  "expected": {
+    "type": "definite",
+    "requiredKeywords": ["webhook"],
+    "forbiddenKeywords": [],
+    "minConfidence": 0.5,
+    "minIterations": 2,
+    "maxIterations": 6,
+    "requiredRoute": "pullRequest",
+    "requiredActionType": "OpenPR"
+  }
+}

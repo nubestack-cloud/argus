@@ -1,0 +1,78 @@
+# Eval — does the investigation loop still reach the right root cause? Manual
+# (workflow_dispatch): run it from the Actions tab.
+#
+# PROJECT.md E19. The product's central claim is diagnostic accuracy, and until
+# this existed there was no regression gate on that claim at all: a prompt edit,
+# a tool-schema change or a model upgrade could degrade it fleet-wide and every
+# other test in this repo would stay green.
+#
+# WHAT THIS RUN ACTUALLY PROVES, and it is narrower than "ARGUS is accurate".
+# It runs in `-mode offline` against the deterministic stand-in, because that is
+# the only configuration that needs no model backend and no secret. So it does
+# NOT measure whether a model still reasons correctly. What it does measure is
+# that the system prompt still carries the instructions a correct investigation
+# depends on, and that the tool schemas, the corpus and the scoring are intact —
+# all of which a prompt or schema edit moves. The harness prints this caveat
+# itself on every run rather than letting a green tick imply more; see
+# scripts/eval-harness/main.go. Point -llm-base-url at a real provider to
+# measure accuracy, and record the floors it achieves before trusting them.
+#
+# NOT A MERGE GATE, deliberately (owner decision, 2026-09-23). A score that
+# moves on its own makes a required check flaky, a flaky required check gets
+# bypassed, and a bypassed check is worse than no check. The `-repeat` run below
+# is what measures whether that is true here; note that a zero spread from a
+# deterministic subject says nothing about a real model's stability, which is
+# why this is not a required check until someone measures the real thing.
+#
+# Two scores are reported separately and never averaged: root-cause match, and
+# the honest-negative rate. "Could not determine" being CORRECT is gradable, and
+# a product that confidently invents a root cause is worse than one that
+# declines — a blended number would let the second be paid for with the first.
+name: Eval
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  eval:
+    name: Eval — root cause against the golden corpus
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # -repeat 3 is the variance measurement, not belt-and-braces: it is the
+      # number that decides whether this can ever become a required check, and
+      # it costs nothing offline. The harness exits non-zero on its own floors
+      # (min-root-cause-rate / min-honest-negative-rate, both 1.0 against the
+      # deterministic subject), so no threshold is restated here — restating it
+      # is how the workflow and the harness come to disagree.
+      - name: run the eval corpus
+        run: |
+          set -o pipefail
+          go run ./scripts/eval-harness -mode offline -repeat 3 2>&1 | tee "$RUNNER_TEMP/eval.txt"
+
+      # Always, including on failure: the scores and the caveats are the point
+      # of reading the run at all, and a failed nightly nobody can read is the
+      # failure mode PROJECT.md P27 exists to close.
+      - name: publish the scores to the run summary
+        if: ${{ !cancelled() }}
+        run: |
+          {
+            echo '## Eval — offline corpus'
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/eval.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

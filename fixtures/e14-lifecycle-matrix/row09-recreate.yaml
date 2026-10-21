@@ -1,0 +1,75 @@
+# E14 lifecycle matrix, row 9 — "recreate" (an object was deleted out from under
+# a running workload and needs recreating).
+# Campaign context and the full row inventory: README.md in this directory.
+#
+# Unblocked 2026-09-06 (PROJECT.md "Decided", same date as B130/F9 exposing
+# CreateResource to the model — this row was expected to connect to that
+# work, and did). RUN 2026-09-06, plain kubectl fixture, `rke2`, own
+# namespace (e14-row9-recreate) — no GitOps involved.
+#
+# Fixture: a plain (non-GitOps) Deployment mounting a ConfigMap as a volume.
+# The ConfigMap was deleted and the Pod force-recreated, producing a real,
+# repeated `FailedMount: configmap "e14-row9-cm" not found` warning event —
+# the exact fault internal/remediation/createresource.go's own header names
+# as CreateResource's motivating case.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e14-row9-recreate
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: e14-row9-cm
+  namespace: e14-row9-recreate
+data:
+  app.conf: "mode=production\nretries=3\n"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: e14-row9-app
+  namespace: e14-row9-recreate
+  labels:
+    app: e14-row9-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: e14-row9-app
+  template:
+    metadata:
+      labels:
+        app: e14-row9-app
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "cat /etc/e14row9/app.conf && sleep 3600"]
+          volumeMounts:
+            - name: cfg
+              mountPath: /etc/e14row9
+      volumes:
+        - name: cfg
+          configMap:
+            name: e14-row9-cm
+
+# RESULT (2026-09-06): auto-analyzed (confidence 0.95). Correctly traced
+# that the ConfigMap existed when the Deployment first started (an earlier
+# Pod ran briefly before being killed), is not GitOps-managed so an
+# in-place fix is the correct route, and CreateResource (v1/ConfigMap-only,
+# B130/F9) is genuinely reachable here — unlike HPA-002's pullRequest-route
+# case. The model checked for the original content (get_logs on the
+# vanished Pod, searched for similarly-labelled ConfigMaps) and, finding
+# none, correctly DECLINED to fabricate CreateResource data it could not
+# ground in evidence — an honest evidence-discipline boundary, not a bug.
+# No propose_remediation/CreateResource tool call was attempted at all, so
+# this result is independent of the concurrent session's B142 finding (the
+# wire-parsing gap that rejects any CreateResource plan the model DOES
+# attempt) — though B142 means a variant of this fixture with recoverable
+# content would not reach Resolved today either. A genuinely GitOps-managed
+# variant of this fault is not live-tested this round; it is expected to be
+# a different, already-known boundary (CreateResource is never offered on
+# RoutePullRequest, and a new-file OpenPR is blocked by B141), not a fresh
+# finding. Full narrative: docs/VERIFICATION.md, "Representative live
+# scenarios", "E14 row 9". Dismissed with a note; namespace fully removed.

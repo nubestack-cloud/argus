@@ -1,0 +1,28 @@
+# Loop campaign, wave 2 — S01b/S01c: a Deployment rolled from a working image to one that does
+# not exist, so the previous revision is the obvious fix (RevertContainerImage).
+# Apply as-is (healthy), wait for Available, then set the bad tag:
+#   kubectl -n argus-loop-test set image deploy/s01b-rollout web=nginx:1.27-argus-loop-typo
+#   kubectl -n argus-loop-test set image deploy/s01c-rollout web=nginx:1.27-argus-loop-typo
+# S01b: analyse, leave the plan waiting, fix by hand (set the image back) → approval withdrawn.
+# S01c: analyse, reject the plan → PlanRejected.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s01b-rollout, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S01b}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: s01b-rollout}}
+  template:
+    metadata: {labels: {app: s01b-rollout}}
+    spec:
+      containers: [{name: web, image: nginx:1.27-alpine, ports: [{containerPort: 80}]}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s01c-rollout, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S01c}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: s01c-rollout}}
+  template:
+    metadata: {labels: {app: s01c-rollout}}
+    spec:
+      containers: [{name: web, image: nginx:1.27-alpine, ports: [{containerPort: 80}]}]

@@ -1,0 +1,16 @@
+-- Drops the column and its foreign key with it. Nothing else depends on it: no
+-- view, no index, no other constraint references it, and the column is
+-- write-only in the product today (see internal/migrations/schema_coverage_test.go's
+-- writeOnlyColumns entry), so no read path breaks on its absence.
+--
+-- Losing the column loses the pins taken since 000116, which is real data loss
+-- rather than a formality — but it is recoverable in the sense that matters:
+-- every decision row still carries recommendation_id, and
+-- remediation_recommendations.analysis_id is NOT NULL and never updated, so
+-- re-applying the up migration and deriving `d.analysis_id = rr.analysis_id`
+-- through that join reconstructs exactly the same values for every decision
+-- written by the three approve/reject paths. What would NOT survive a
+-- down-and-up is the distinction between a pin taken at decision time and one
+-- derived afterwards — which is precisely the distinction the up migration
+-- refuses to blur by backfilling.
+ALTER TABLE remediation_approval_decisions DROP COLUMN analysis_id;

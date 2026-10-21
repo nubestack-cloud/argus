@@ -1,0 +1,533 @@
+# CI — the gate every push and pull request has to pass.
+#
+# STATUS.md §3 put this first for a reason: 46 Go test files existed and nothing
+# ran them automatically, so every regression was caught (or missed) by whoever
+# remembered to run the suite. Several real ones were caught by hand in a single
+# session — a stale test assertion after a severity-table change, a build break
+# from a widened interface, a gofmt drift — all of which this catches for free.
+#
+# WHAT CHANGED, 2026-09-23 (PROJECT.md P26/P27). This header used to argue that
+# the workflow deliberately had "no Postgres service", and that a test needing a
+# database "is a signal to reach for the integration-verified pattern this
+# codebase already uses for DB-heavy code, not to add a service container here."
+# That argument did not survive its own consequence. 105 `*_db_test.go` files —
+# 29,467 lines, 301 test functions — call `t.Skip` when ARGUS_TEST_DATABASE_URL
+# is unset, and the "integration-verified pattern" they were being pointed at
+# turned out to be a human remembering to export that variable. Measured on this
+# tree on 2026-09-23: 347 test functions skipped on every single PR, covering RLS
+# scoping, the incident state machine, promotion reconciliation, pull-request
+# verification, the audit hash chain and spend accounting. CLAUDE.md already
+# warned that "a green `go test ./...` on a machine with no database has proved
+# less than it looks like it has" — this workflow was that machine, and the
+# comment that used to sit here was the reason nobody fixed it.
+#
+# So there is a Postgres service now. It lives in its own `go-db` job below
+# rather than being bolted onto the hermetic `go` job, because the two jobs prove
+# two different things and both are worth keeping:
+#
+#   go     — still fast and hermetic: no Postgres, no Docker build, no live
+#            cluster. What it proves is that the tree builds, vets, is gofmt
+#            clean and passes with NO external services — which is also exactly
+#            what a developer's own `go test ./...` does all day. If the
+#            database run were the only run, a test that quietly started
+#            REQUIRING a database would break every laptop and no CI job.
+#   go-db  — the same suite with ARGUS_TEST_DATABASE_URL pointed at a real,
+#            migrated, bootstrapped Postgres, plus a gate that fails the job if
+#            any test skipped for want of that variable. A run where the
+#            database was unreachable comes out red, not green. That is the
+#            entire point: "the tests all skipped" and "the tests all passed"
+#            were previously the same observation.
+#
+# They run in parallel, so the fast gate still reports a gofmt or compile break
+# in about a minute instead of queueing behind a Postgres boot and 90-odd
+# migrations. The cost is that the Go suite compiles and runs twice; that is
+# accepted, and it buys unambiguous failure attribution plus a separate `go-db`
+# job name that branch protection can require on its own — PROJECT.md P27's
+# other half, which is a repository setting and cannot be made true from any
+# file in this directory.
+#
+# The dependency-scan job below remains the one exception to "hermetic" in the
+# no-database half: govulncheck and npm audit both need network access to a
+# public vulnerability database, exactly like the `go mod download`/`npm ci`
+# steps elsewhere in this file already do — no new class of dependency, just
+# named here since the job's whole purpose IS that network call.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Manual trigger, so a run can be forced without pushing.
+  workflow_dispatch:
+
+# A newer push to the same branch/PR makes an in-flight run obsolete.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go — build, vet, test, format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # Tracks go.mod rather than pinning a second copy of the version that
+          # would then drift from it.
+          go-version-file: go.mod
+          cache: true
+
+      # gofmt first: it is the cheapest check and the one most likely to drift,
+      # since nothing in the editor loop enforces it. `gofmt -l` lists offending
+      # files and exits 0 either way, so the file list itself is the assertion.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l . | grep -v '^web/' || true)
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files are not gofmt-clean:"
+            echo "$unformatted"
+            gofmt -d $unformatted
+            exit 1
+          fi
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      # -race matters here: the agent runs several detectors as concurrent
+      # goroutines sharing one findings channel, and the hub runs five background
+      # jobs against one pool. Those are exactly the shapes where a data race
+      # hides until production.
+      - name: go test
+        run: go test -race ./...
+
+  go-db:
+    name: Go — DB-backed tests (real Postgres)
+    runs-on: ubuntu-latest
+
+    # pgvector/pgvector:pg16, not postgres:16 — migration 000082 runs
+    # `CREATE EXTENSION IF NOT EXISTS vector`, so a plain postgres image fails
+    # to migrate. This is the same image deploy/compose/docker-compose.yaml
+    # uses, which means CI and local dev run the identical engine rather than
+    # two that agree until they don't.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: argus
+        ports:
+          - 5432:5432
+        # Same probe and cadence as the compose profile's own healthcheck.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+
+    # PIN EVERY SIDE OF THE CI DATABASE CREDENTIAL HERE, TOGETHER — the same
+    # discipline, for the same reason, as e2e.yml's bootstrap-password block:
+    # three variables have to agree about one password, and "they happened to
+    # default to the same literal" is precisely how that coupling broke before.
+    # None of these is a secret; this database exists for the length of one job
+    # and dies with the runner.
+    #
+    #   ARGUS_MIGRATE_DATABASE_URL — the migration-owning (superuser) role.
+    #       `hub migrate` deliberately refuses to run as argus_app, because
+    #       argus_app having DDL rights would make lld/02-authz-spec.md §10.2's
+    #       non-owner-role precondition meaningless.
+    #   ARGUS_APP_PASSWORD — read by the same `hub migrate` run, which sets it
+    #       as the login password of the argus_app role that migration 000009
+    #       creates NOLOGIN. Nothing else can: no password belongs in a
+    #       migration file.
+    #   ARGUS_DATABASE_URL / ARGUS_TEST_DATABASE_URL — the argus_app role, NOT
+    #       the superuser. This is load-bearing, not tidiness: argus_app has no
+    #       BYPASSRLS, so every FORCE ROW LEVEL SECURITY policy is genuinely in
+    #       force while the tests run. Point these at `postgres` instead and
+    #       the whole RLS class of bug — the largest single class this job
+    #       exists to catch — becomes invisible, with every test still green.
+    env:
+      ARGUS_MIGRATE_DATABASE_URL: postgres://postgres:postgres@localhost:5432/argus?sslmode=disable
+      ARGUS_APP_PASSWORD: ci-argus-app-password
+      ARGUS_DATABASE_URL: postgres://argus_app:ci-argus-app-password@localhost:5432/argus?sslmode=disable
+      ARGUS_TEST_DATABASE_URL: postgres://argus_app:ci-argus-app-password@localhost:5432/argus?sslmode=disable
+      ARGUS_BOOTSTRAP_PASSWORD: ci-bootstrap-password
+      # The bootstrap step below only needs the hub to reach /readyz and then
+      # go away; the rollout drain delay is dead time here.
+      ARGUS_SHUTDOWN_READINESS_DELAY_SECONDS: '0'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Built once and reused by the two steps below. `go run` would fork a
+      # child the bootstrap step then could not signal by PID.
+      - name: build the hub binary
+        run: go build -o "$RUNNER_TEMP/hub" ./cmd/hub
+
+      # HOW THE SCHEMA GETS CREATED: nothing in internal/dbtest or
+      # internal/migrations applies migrations on its own. internal/migrations
+      # only `go:embed`s the .sql files, and the *_db_test.go fixtures assume
+      # they are handed an already-migrated database — so the workflow has to
+      # do it, and does it the same way RUNBOOK.md's "Option B" tells a
+      # developer to: one `hub migrate`, which applies every pending migration
+      # AND gives argus_app its login password in the same run.
+      - name: apply migrations (and give argus_app a login password)
+        run: |
+          "$RUNNER_TEMP/hub" migrate
+
+      # AND WHY MIGRATING IS NOT ENOUGH. A migrated-but-empty database has no
+      # organisations row, and a large family of these tests resolves its
+      # tenant with data.SingleOrganisationID — internal/authz/session_test.go,
+      # internal/notify, internal/knowledge, internal/audit and others all fail
+      # with "resolve organisation: no rows in result set" against a schema
+      # that is otherwise perfectly correct. That singleton row is created by
+      # authz.EnsureBootstrap, which runs on `hub api` startup, so the honest
+      # way to produce it is to start the real hub once and stop it — not to
+      # hand-write an INSERT here that would then drift from the bootstrap path
+      # it is imitating.
+      #
+      # Two things come free with doing it this way. The hub creates the
+      # current and next month's findings/incidents partitions on startup, as
+      # it does in every real deployment; and /readyz answering 200 means
+      # data.DB.CheckRLSPreconditions passed, i.e. this job's connection really
+      # cannot bypass RLS (lld/01-threat-model.md SR-2). That check is what
+      # makes a green run below meaningful rather than a superuser quietly
+      # seeing every row.
+      - name: bootstrap the database (start the real hub, wait for /readyz, stop it)
+        run: |
+          "$RUNNER_TEMP/hub" api > "$RUNNER_TEMP/hub-bootstrap.log" 2>&1 &
+          pid=$!
+          ready=0
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:8080/readyz > /dev/null; then
+              ready=1
+              break
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+          cat "$RUNNER_TEMP/hub-bootstrap.log"
+          if [ "$ready" -ne 1 ]; then
+            echo "::error::the hub never became ready against the CI database — the DB tests below would be meaningless, so this job stops here"
+            exit 1
+          fi
+
+      # No -race here, unlike the hermetic `go` job above, and this is a
+      # deliberate asymmetry rather than an oversight:
+      #   * the `go` job already runs `-race ./...` over every package in the
+      #     tree, so nothing loses race coverage that had it before;
+      #   * the race detector's 5-20x slowdown breaks tests that assert on
+      #     timing, and at least one DB-gated one already fails under it
+      #     reproducibly (internal/gateway's
+      #     TestFindingProcessingInflight_RisesWhileProcessingAndFallsAfter,
+      #     which needs a 500ms-delayed Finding to still be in flight when it
+      #     reads the gauge). A required check that is flaky gets ignored, and
+      #     an ignored required check is worse than none.
+      # Turning this on is a real want — these DB-gated concurrency tests are
+      # exactly the ones -race never sees — but it needs those timing
+      # assertions made robust first, not a flaky gate landed today.
+      #
+      # continue-on-error so the gate step below always runs and can report
+      # BOTH kinds of failure at once; it re-fails the job on this step's
+      # outcome, so nothing is swallowed.
+      - name: go test (against the real database)
+        id: gotest
+        continue-on-error: true
+        run: go test -count=1 -json ./... > "$RUNNER_TEMP/gotest.json"
+
+      # THE ZERO-SKIP GATE — the reason this job is worth having at all.
+      #
+      # Without it the job could pass having executed nothing. Every one of the
+      # 105 *_db_test.go files calls t.Skip when ARGUS_TEST_DATABASE_URL is
+      # unset, and `go test` reports a run of nothing but skips as success — so
+      # a typo in a connection string, a service container that never came up,
+      # or a renamed variable would all look exactly like green. That is not a
+      # hypothetical: it is the state this repo was in until 2026-09-23, and
+      # the state PROJECT.md P26 was written about.
+      #
+      # `go test -json` rather than counting "--- SKIP" lines: -json is the
+      # only output that reliably pairs a skip with the test that emitted it
+      # and the reason it gave, subtests included, across parallel packages
+      # whose plain-text output interleaves. It is also what lets the error
+      # below name the tests rather than print a number.
+      #
+      # The assertion is "zero skips that name ARGUS_TEST_DATABASE_URL", NOT
+      # "zero skips". 13 tests skip here for unrelated reasons that are correct
+      # on a GitHub runner and would be wrong to force: live-cluster predicates
+      # (ARGUS_AGENT_RULES_LIVE, ARGUS_RENDER_SANDBOX_LIVE), network clones
+      # against a real forge (ARGUS_GITOPS_LIVE), and a live Ollama round-trip
+      # (ARGUS_TEST_OLLAMA_URL). Gating on the total would fail the job the day
+      # someone adds a fourteenth, and the pressure would then be to delete the
+      # skip rather than provision the cluster. Gating on the database reason
+      # fails exactly when the database is what went missing. Those other skips
+      # are still printed on every run rather than silently ignored — the same
+      # treatment the non-blocking `npm audit` gets in the web job.
+      - name: assert the DB tests actually ran (zero skips for want of a database)
+        env:
+          GO_TEST_OUTCOME: ${{ steps.gotest.outcome }}
+        run: |
+          python3 - "$RUNNER_TEMP/gotest.json" <<'PY'
+          import collections
+          import json
+          import os
+          import sys
+
+          output = collections.defaultdict(list)
+          counts = collections.Counter()
+          skipped, failed = [], []
+
+          with open(sys.argv[1]) as fh:
+              for line in fh:
+                  try:
+                      event = json.loads(line)
+                  except ValueError:
+                      continue
+                  package, test, action = event.get("Package"), event.get("Test"), event.get("Action")
+                  if not test:
+                      continue
+                  if action == "output":
+                      output[(package, test)].append(event.get("Output", ""))
+                  elif action in ("pass", "fail", "skip"):
+                      counts[action] += 1
+                      if action == "skip":
+                          skipped.append((package, test))
+                      elif action == "fail":
+                          failed.append((package, test))
+
+          def reason(key):
+              """Everything the test printed — where t.Skip's own message ends up."""
+              return "".join(output.get(key, ()))
+
+          def skip_line(key):
+              """The t.Skip message itself: the last line before go test's own '--- SKIP'."""
+              lines = [ln.strip() for ln in reason(key).splitlines()
+                       if ln.strip() and not ln.strip().startswith(("=== RUN", "=== PAUSE", "=== CONT", "--- SKIP"))]
+              return lines[-1] if lines else "no reason recorded"
+
+          db_skips = [k for k in skipped if "ARGUS_TEST_DATABASE_URL" in reason(k)]
+          db_skipped = set(db_skips)
+          other_skips = [k for k in skipped if k not in db_skipped]
+
+          print("ran %d, failed %d, skipped %d (%d of them for want of a database)"
+                % (counts["pass"], counts["fail"], counts["skip"], len(db_skips)))
+          print("")
+          print("skipped for reasons unrelated to the database (expected on a GitHub runner):")
+          for key in other_skips:
+              print("  %s %s — %s" % (key[0], key[1], skip_line(key)))
+
+          ok = True
+
+          if counts["pass"] == 0 and counts["fail"] == 0:
+              print("::error::no test results at all in the -json stream — `go test` did not get as far as running tests")
+              ok = False
+
+          if db_skips:
+              ok = False
+              print("::error::%d test(s) skipped because ARGUS_TEST_DATABASE_URL was unset or unusable. "
+                    "The database was not reachable, so this run proved nothing — a skipped DB suite is a "
+                    "failure, not a pass. Check the postgres service container and the migrate/bootstrap "
+                    "steps above." % len(db_skips))
+              for package, test in db_skips[:20]:
+                  print("  skipped: %s %s" % (package, test))
+              if len(db_skips) > 20:
+                  print("  ... and %d more" % (len(db_skips) - 20))
+
+          if os.environ.get("GO_TEST_OUTCOME") != "success":
+              ok = False
+              for package, test in failed:
+                  print("::error::%s %s failed" % (package, test))
+                  sys.stdout.write(reason((package, test)))
+              if not failed:
+                  print("::error::`go test` exited non-zero with no individual test failure recorded "
+                        "(a build failure, a panic, or a timeout — see the step above)")
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a") as fh:
+                  fh.write("### Go DB-backed tests\n\n")
+                  fh.write("| ran | failed | skipped | skipped for want of a database |\n")
+                  fh.write("| --- | --- | --- | --- |\n")
+                  fh.write("| %d | %d | %d | %d |\n"
+                           % (counts["pass"], counts["fail"], counts["skip"], len(db_skips)))
+
+          sys.exit(0 if ok else 1)
+          PY
+
+  web:
+    name: Web — typecheck, lint, build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the Dockerfile's web-build stage, so CI and the real image
+          # build agree.
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+
+      # PROJECT.md F33, second half. `web/src/api/generated.ts` is produced
+      # from `docs/openapi.yaml` by openapi-typescript, and
+      # `web/src/api/types.ts` re-exports ~dozens of types straight out of it
+      # (`components['schemas'][...]`) — so it is a real, compiled dependency
+      # of the UI, not a convenience artifact. It was nevertheless regenerated
+      # BY HAND, whenever somebody remembered, with nothing anywhere checking
+      # it. A spec edit that nobody regenerated for left the UI compiling
+      # happily against the OLD shape: exactly the class of silent divergence
+      # the Go contract test was built to end on the server side, still wide
+      # open on the client side.
+      #
+      # This runs the same `npm run generate-api-types` a developer runs — not
+      # a re-spelled copy of the command, which would be one more thing that
+      # can drift — and fails if the result differs from what is committed.
+      # On failure the diff itself is the instruction: run that script and
+      # commit the result.
+      #
+      # WHY THE GENERATOR VERSION IS PINNED EXACTLY (`openapi-typescript@7.13.0`
+      # in web/package.json, not `^7.13.0`). A diff gate has to be
+      # reproducible or it is worse than nothing: under a caret range, the
+      # first upstream release that changed formatting would turn this job red
+      # on a branch that touched neither the spec nor the UI, and this
+      # workflow's own header is explicit that a flaky required check gets
+      # ignored. Pinned, a generator upgrade is a deliberate edit whose
+      # regenerated output lands in the same commit.
+      #
+      # Placed before the typecheck so a stale file is reported as staleness
+      # rather than as whatever type error it happens to cause three files
+      # away.
+      - name: api types are in sync with docs/openapi.yaml
+        run: |
+          npm run generate-api-types
+          if ! git diff --quiet -- src/api/generated.ts; then
+            echo "::error file=web/src/api/generated.ts::regenerating from docs/openapi.yaml produced a diff — docs/openapi.yaml changed and src/api/generated.ts was not regenerated. Run 'npm run generate-api-types' in web/ and commit the result."
+            git --no-pager diff -- src/api/generated.ts
+            exit 1
+          fi
+
+      # tsc separately from the build: `npm run build` runs `tsc -b && vite
+      # build`, so a type error would fail the build step anyway — but as its own
+      # step the failure says "types" rather than "build", which is the first
+      # thing you want to know.
+      - name: typecheck
+        run: npx tsc --noEmit
+
+      - name: lint
+        run: npm run lint
+
+      # The mechanically checkable half of the design system
+      # (.claude/skills/argus-design-system/reference/). Most design rules need judgement and are
+      # reviewed by the argus-design-review skill, which cannot run here — this is the remainder that
+      # a script can decide: off-scale type sizes, colour literals outside the token block,
+      # transition: all, outline removal, zoom disabling, status carried by a bare glyph.
+      #
+      # Fails on NEW findings only. Pre-existing violations are recorded in
+      # scripts/design-lint-baseline.json (13 off-scale font sizes, BACKLOG.md P11) because snapping
+      # them to the scale is a visual change that needs a browser, not a CI-time decision. Drift is
+      # what this catches; existing debt is not drift.
+      - name: design-lint
+        run: npm run design-lint
+
+      - name: build
+        run: npm run build
+
+  dependency-scan:
+    name: Dependency scan — govulncheck (Go) + npm audit (web)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      # PROJECT.md G10 ("no dependency ... scanning"). Fails only on a
+      # call-reachable finding not already in scripts/govulncheck-baseline.json
+      # — see that script's own header for why (the same "gate on drift, not
+      # on existing debt" shape design-lint already uses in the web job
+      # below, applied to a security scanner instead of a style linter, and
+      # for the same reason: a scanner that fails on day one either gets a
+      # blanket ignore-file bolted on to force it green, or gets disabled the
+      # first time someone is in a hurry — neither is acceptable, and this
+      # repo's own instructions are explicit that pinning backwards or adding
+      # an ignore file to get a scan green is not a fix).
+      - name: govulncheck
+        run: |
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          ./scripts/govulncheck-gate.sh
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: npm ci
+        working-directory: web
+        run: npm ci
+
+      # Blocking: production dependencies only (what actually ships in the
+      # built web bundle). Currently clean — no baseline mechanism exists or
+      # is needed for this half yet; if that changes, mirror govulncheck's
+      # baseline approach rather than silencing it.
+      - name: npm audit (production dependencies)
+        working-directory: web
+        run: npm audit --omit=dev
+
+      # Informational only: dev-only tooling (e.g. a vitest/mocker advisory)
+      # never ships in `npm run build`'s output and is not gated, but is
+      # still surfaced on every run rather than silently ignored.
+      - name: npm audit (including dev dependencies, non-blocking)
+        working-directory: web
+        continue-on-error: true
+        run: npm audit
+
+  migrations:
+    name: Migrations — every up has a down
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A one-way migration is not caught by any other check here: it builds,
+      # vets, tests and deploys fine, and only bites when a rollback is actually
+      # needed. Numbering gaps are deliberately NOT checked — golang-migrate
+      # tracks the highest applied version, and 000014/000025 were skipped
+      # harmlessly (see STATUS.md §0).
+      - name: check up/down pairing
+        run: |
+          cd internal/migrations
+          missing=0
+          for up in *.up.sql; do
+            down="${up%.up.sql}.down.sql"
+            if [ ! -f "$down" ]; then
+              echo "::error file=internal/migrations/$up::no matching $down"
+              missing=1
+            fi
+          done
+          exit $missing

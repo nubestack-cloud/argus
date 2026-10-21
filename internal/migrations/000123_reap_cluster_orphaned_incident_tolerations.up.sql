@@ -1,0 +1,115 @@
+-- PROJECT.md B186, second of the two orphan sets migration 000120 left: 57
+-- incident_tolerations rows whose incident_id names an incident that no longer
+-- exists.
+--
+-- B186 states the hazard precisely, and it is a real one: incident_id on this
+-- table is NULLABLE PROVENANCE — it records which incident prompted the rule,
+-- nothing reads it to decide anything — so "the incident is gone" says nothing
+-- at all about whether the rule is still suppressing findings. Deleting a row
+-- on that basis would change what the product suppresses, which is a behaviour
+-- change, not a cleanup, and B186 says such a change needs an owner.
+--
+-- # So this migration does NOT use that predicate
+--
+-- It uses a different one, which answers the question the incident-orphan
+-- predicate cannot: can this row ever suppress anything again?
+--
+--   NOT EXISTS (SELECT 1 FROM clusters c WHERE c.id = t.cluster_id)
+--
+-- The live suppression check is internal/gateway/toleration.go's
+-- FindingTolerated, and its WHERE clause is
+--
+--   cluster_id = $1 AND object_key = $2 AND removed_at IS NULL
+--     AND (expires_at IS NULL OR expires_at > now())
+--     AND (reasons IS NULL OR $3 = ANY(reasons))
+--
+-- — keyed on cluster_id AND object_key, not on object_key alone. It is called
+-- from internal/gateway/finding.go's handleFinding with the cluster id of the
+-- agent whose mTLS tunnel delivered the Finding, so $1 is always an enrolled
+-- cluster's id. A toleration whose cluster_id names no row in `clusters` can
+-- therefore never match: there is no agent that could present that id, and
+-- cluster ids are ULIDs minted per enrolment and never reissued, so one cannot
+-- come back. Deleting such a row changes nothing about what is suppressed,
+-- which is exactly what B186 asked to be established before anything was
+-- deleted.
+--
+-- On this database the two predicates happen to select the same 57 rows. That
+-- is a coincidence of the dev data, not the reason, and the predicate written
+-- here is the one whose justification holds on a database that has not been
+-- looked at.
+--
+-- # Census
+--
+-- Read-only, role `postgres` (under `argus_app` this table's RLS returns zero
+-- rows with no tenant set, which would have made the debris look absent):
+--
+--   incident_tolerations total ................................ 455
+--   ... on a cluster that no longer exists ..................... 57
+--   ... on an archived (decommissioned) cluster ............... 395
+--   ... on a live, non-archived cluster ......................... 3
+--   rows that survive this DELETE ............................. 398
+--
+--   of the 57: active (removed_at IS NULL) ..................... 57
+--              active AND unexpired ............................ 57
+--              auto_created = true ............................. 57
+--              created_by .................................... NULL
+--              distinct cluster ids ............................ 57
+--              incident_id also orphaned ....................... 57
+--
+-- Archived clusters are deliberately NOT in the set. An archived cluster has a
+-- row, keeps its id, and `argusctl cluster add` can bring one back — so its
+-- tolerations are dormant, not dead, and 395 of them are somebody's real
+-- decisions about real workloads.
+--
+-- # Four independent signals, and one that is honestly inconclusive
+--
+--   1. No clusters row for cluster_id — the predicate itself.      57 of 57
+--   2. object_key is not in the format the product produces.       57 of 57
+--      gateway.objectCorrelationKey writes `gvk|namespace|name`
+--      (internal/api/tolerations.go's splitObjectKey and
+--      suppressedFindingsPredicate both parse exactly that). These 57 carry
+--      `cl_<ULID>/v1/Pod/default/checkout-Detected` — slash-separated and
+--      prefixed with the cluster id. 0 of 57 contain a '|'; 398 of 398
+--      surviving rows do. A key in that shape could never have matched a
+--      Finding even if its cluster still existed, because the comparison is a
+--      string equality against the concatenation.
+--   3. 57 rows on 57 DISTINCT clusters, created in a 27-hour window, every one
+--      of them auto_created with a NULL created_by and the same object name.
+--      That is one throwaway cluster per test run, not a fleet.
+--   4. The exact producer is identifiable: internal/api/
+--      decommission_lifecycle_db_test.go builds
+--      `clusterID+"/v1/Pod/default/checkout-"+state`, and every one of the 57
+--      ends in `checkout-Detected` — the state that fixture dismisses, which
+--      is what makes orchestrator's auto-suppression (PROJECT.md T6) write a
+--      toleration. This is the same fixture class PROJECT.md B188 is about.
+--   5. INCONCLUSIVE, and recorded as such rather than counted: no finding on
+--      this database has been suppressed by any of the 57. It is also true
+--      that none has been suppressed by any of the surviving 398, so the
+--      figure does not discriminate and is not evidence either way. Signals 1
+--      and 2 are what this decision rests on.
+--
+-- # The question that is NOT answered here, and is left open deliberately
+--
+-- B186's harder half is what to do about a toleration whose INCIDENT is gone
+-- while its cluster is alive: provenance lost, suppression still live. This
+-- database has 0 such rows (measured), so there is nothing to act on and no
+-- decision is taken. If one ever appears, the answer is not a reap — a rule
+-- that is still suppressing findings on a live cluster is doing its job, and
+-- losing the incident that prompted it costs an explanation in the UI, not
+-- correctness. It would be an owner's call whether the UI should say
+-- "prompted by an incident that has since been deleted" rather than showing a
+-- dead link, which is a product question rather than a cleanup.
+--
+-- # What this does not touch
+--
+-- audit_events, for the reason internal/dbtest/residue.go exempts it and
+-- migrations 000120 and 000122 restate: it is a hash chain, and deleting from
+-- its middle breaks `argusctl audit verify`. A toleration is not itself an
+-- audit record — its creation and removal are separately audited, and those
+-- rows stay.
+--
+-- Runs as the migration superuser, so RLS is bypassed and this sees every
+-- tenant's rows — which is what a one-time catch-up wants.
+
+DELETE FROM incident_tolerations t
+ WHERE NOT EXISTS (SELECT 1 FROM clusters c WHERE c.id = t.cluster_id);

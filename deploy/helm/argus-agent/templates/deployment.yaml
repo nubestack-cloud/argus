@@ -1,0 +1,363 @@
+{{- if not (include "argus-agent.skip" .) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argus-agent
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # Recreate, not the default RollingUpdate: with the default emptyDir
+  # (values.yaml's `dataDir`), a surging second Pod during a rolling update
+  # would come up with no persisted identity and try to re-enroll as the
+  # same cluster (same kube-system UID -> same fingerprint,
+  # lld/03-agent-protocol.md §5) while the old Pod's enrollment is still
+  # live — at best a wasted, rejected Enroll call (409, duplicate
+  # fingerprint), at worst exactly the concurrent-session situation §7's
+  # session-conflict detection exists to flag once it's implemented. With
+  # persistence.enabled's PVC instead (BUGS.md 128), a surging second Pod
+  # would simply fail to schedule — the claim's ReadWriteOnce access mode
+  # (values.yaml's `persistence.accessModes` default) cannot be mounted by
+  # two Pods at once — which is a stall, not silent double-enrollment, but
+  # still not what an upgrade should do. And with identity.mode: secret (the
+  # default since PROJECT.md B163), a surging second Pod would come up
+  # holding the SAME identity as the old one and open a second tunnel for one
+  # cluster under the same (clusterID, role) key — the gateway's registry
+  # keeps only the newest for a given key, so the old Pod's session is
+  # silently displaced mid-work. (Since PROJECT.md E11 that key includes the
+  # role, which is what lets the REMEDIATION agent hold a second connection
+  # for the same cluster legitimately; two connections with the SAME role
+  # still displace each other, which is what this strategy prevents.) Recreate
+  # guarantees the old Pod is fully gone before the new one starts in all
+  # three cases, matching the "exactly one agent per cluster" model
+  # replicaCount's comment describes.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "argus-agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "argus-agent.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "argus-agent.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # No KUBECONFIG is mounted anywhere in this spec, deliberately: running
+      # in-cluster as serviceAccountName above is exactly what makes
+      # internal/agent/facts.go's rest.InClusterConfig() path work — it
+      # reads the projected SA token/CA/namespace files kubelet mounts
+      # automatically, no extra wiring needed. Do not add a kubeconfig
+      # Secret/mount here; that would bypass the ServiceAccount this chart
+      # exists to enforce.
+      #
+      # This is NOT contradicted by the dryrun-token Secret volume mounted
+      # below when dryRun.enabled — that is a second, INDEPENDENT bearer
+      # credential for a genuinely different identity (argus-dryrun),
+      # deliberately separate from whichever ServiceAccount this Pod itself
+      # runs as (see templates/dryrun.yaml's header comment for why it has
+      # to be independent). It is a plain Secret volume mount, not a
+      # kubeconfig, and it grants nothing beyond what argus-dryrun's own
+      # ClusterRole already holds — it does not widen or bypass THIS
+      # ServiceAccount's identity in any way.
+      securityContext:
+        runAsNonRoot: true
+        # Explicit numeric UID/GID, not just runAsNonRoot: true relying on the
+        # image's own USER nonroot directive — found as a real deploy failure
+        # against a real cluster (containerd/RKE2): "cannot verify user is
+        # non-root" from a *symbolic* image user, even though the image (see
+        # Dockerfile's `agent` stage, gcr.io/distroless/base-debian12:nonroot)
+        # genuinely never runs as root. 65532 is that base image's documented
+        # nonroot UID/GID — hardcode it here rather than trust kubelet to
+        # resolve the image's /etc/passwd entry, which this cluster's runtime
+        # config doesn't do.
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent
+          image: {{ include "argus-agent.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            # internal/agent.Config field names / env vars per
+            # cmd/agent/main.go — verified against that file, not guessed.
+            - name: ARGUS_HUB_API_URL
+              value: {{ include "argus-agent.hubApiUrl" . | quote }}
+            {{- with include "argus-agent.tunnelEndpoint" . }}
+            - name: ARGUS_TUNNEL_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with include "argus-agent.hubCAEnv" . }}{{ . | nindent 12 }}{{- end }}
+            # PROJECT.md AD10: the image this pod runs, reported in the agent's
+            # facts so the hub can say when it is behind, and whether this
+            # chart lets the hub upgrade it.
+            - name: ARGUS_AGENT_IMAGE
+              value: {{ include "argus-agent.image" . | quote }}
+            # True only when the upgrade can actually run: it is carried out by
+            # the remediation identity, which exists only with remediate.enabled.
+            - name: ARGUS_SELF_UPGRADE
+              value: {{ and .Values.selfUpgrade.enabled .Values.remediate.enabled | quote }}
+            - name: ARGUS_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # The agent reads its running image off its own Pod, because an
+            # upgrade from the hub changes the image and not ARGUS_AGENT_IMAGE.
+            - name: ARGUS_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: ARGUS_ENROLLMENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "argus-agent.enrollmentSecretName" . }}
+                  key: {{ include "argus-agent.enrollmentSecretKey" . }}
+            {{- if .Values.displayName }}
+            - name: ARGUS_CLUSTER_DISPLAY_NAME
+              value: {{ .Values.displayName | quote }}
+            {{- end }}
+            # PROJECT.md E11. This process is the INVESTIGATION connection:
+            # read-only tools, detection, facts. Declared to the hub on its
+            # first message so a write action is never routed here.
+            #
+            # It grants nothing and takes nothing away — what this process
+            # can do to the cluster is decided by serviceAccountName above
+            # (argus-investigate, which holds no create/update/patch/delete
+            # verb on anything) and by this cluster's RBAC. Setting this to
+            # "remediate" would not make this Pod able to write; it would
+            # only make the hub send it writes the API server then refuses.
+            - name: ARGUS_AGENT_ROLE
+              value: investigate
+            - name: ARGUS_AGENT_DATA_DIR
+              value: {{ .Values.dataDir | quote }}
+            {{- if .Values.clusterFingerprint }}
+            # PROJECT.md E11: explicit fingerprint, replacing the derived
+            # sha256(kube-system UID). Only rendered when the value is set —
+            # see values.yaml's clusterFingerprint for when that is
+            # appropriate (a side-by-side agent rollout) and what it costs.
+            - name: ARGUS_CLUSTER_FINGERPRINT
+              value: {{ .Values.clusterFingerprint | quote }}
+            {{- end }}
+            {{- if eq .Values.identity.mode "secret" }}
+            # PROJECT.md B163: the Secret this agent reads and updates its
+            # hub-issued identity in, so a pod replacement is a restart
+            # rather than a disconnection. Both are required together —
+            # internal/agent refuses to start with a Secret name and no
+            # namespace rather than guessing one. See
+            # templates/identity-secret.yaml.
+            - name: ARGUS_AGENT_IDENTITY_SECRET
+              value: {{ .Values.identity.secretName | quote }}
+            - name: ARGUS_AGENT_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- end }}
+            {{- if .Values.dryRun.enabled }}
+            # BACKLOG.md C4: tells internal/agent where to find the SECOND,
+            # independent credential dry_run_patch submits through — see
+            # templates/dryrun.yaml's header comment for why this cannot be
+            # the same identity this Pod's own serviceAccountName resolves
+            # to.
+            - name: ARGUS_DRYRUN_TOKEN_DIR
+              value: {{ .Values.dryRun.tokenMountPath | quote }}
+            {{- end }}
+            # BACKLOG.md F14's argus-policy-controller credential is NOT
+            # mounted here since PROJECT.md E11. The two tools that use it
+            # (open_execution_window / close_execution_window) bracket a
+            # remediation execution and the hub routes them to the
+            # remediation connection, so the credential lives in that Pod —
+            # see templates/remediate-deployment.yaml. Giving it to the
+            # read-only investigation agent would hand the path the model can
+            # reach a credential it has no use for.
+            {{- if and .Values.metrics.prometheusService.namespace .Values.metrics.prometheusService.name }}
+            # BACKLOG.md C4: tells internal/agent where to find the
+            # Prometheus this cluster's query_metrics tool should query — see
+            # templates/metrics.yaml for the RBAC grant that makes reaching it
+            # possible. Unlike the two blocks above, this is NOT a second
+            # credential — it is read through this Pod's own
+            # serviceAccountName, so there is no matching Secret volume mount
+            # below.
+            - name: ARGUS_METRICS_PROMETHEUS_NAMESPACE
+              value: {{ .Values.metrics.prometheusService.namespace | quote }}
+            - name: ARGUS_METRICS_PROMETHEUS_SERVICE
+              value: {{ .Values.metrics.prometheusService.name | quote }}
+            - name: ARGUS_METRICS_PROMETHEUS_PORT
+              value: {{ .Values.metrics.prometheusService.port | quote }}
+            {{- end }}
+            {{- with .Values.metrics.external }}{{- if .url }}
+            # PROJECT.md PG17: a Prometheus-compatible endpoint outside the
+            # cluster, used instead of prometheusService above.
+            - name: ARGUS_METRICS_EXTERNAL_URL
+              value: {{ .url | quote }}
+            {{- if .extraLabel }}
+            - name: ARGUS_METRICS_EXTERNAL_EXTRA_LABEL
+              value: {{ .extraLabel | quote }}
+            {{- end }}
+            {{- if dig "headersSecretRef" "name" "" . }}
+            - name: ARGUS_METRICS_EXTERNAL_HEADERS_FILE
+              value: /etc/argus/metrics-external/headers
+            {{- end }}
+            {{- if .caBundle }}
+            - name: ARGUS_METRICS_EXTERNAL_CA_FILE
+              value: /etc/argus/metrics-external-ca/ca.crt
+            {{- end }}
+            {{- end }}{{- end }}
+            {{- if and (dig "argocd" "url" "" (.Values.gitops | default dict)) (dig "argocd" "tokenSecretRef" "name" "" (.Values.gitops | default dict)) }}
+            # PROJECT.md CI-P9 (b): Argo CD's API, for field-level drift on
+            # objects with no last-applied configuration. Read-only token.
+            - name: ARGUS_ARGOCD_URL
+              value: {{ .Values.gitops.argocd.url | quote }}
+            - name: ARGUS_ARGOCD_TOKEN_FILE
+              value: /etc/argus/argocd/token
+            {{- end }}
+            {{- if dig "kubecost" "url" "" (.Values.cost | default dict) }}
+            # PROJECT.md PG22: Kubecost's allocation API as the cost source.
+            - name: ARGUS_KUBECOST_URL
+              value: {{ .Values.cost.kubecost.url | quote }}
+            {{- if dig "kubecost" "headersSecretRef" "name" "" .Values.cost }}
+            - name: ARGUS_KUBECOST_HEADERS_FILE
+              value: /etc/argus/kubecost/headers
+            {{- end }}
+            {{- end }}
+            - name: ARGUS_OBJECT_CACHE_ENABLED
+              value: {{ .Values.objectCache.enabled | quote }}
+            - name: ARGUS_POSTURE_ENABLED
+              value: {{ .Values.posture.enabled | quote }}
+            - name: ARGUS_POSTURE_INTERVAL
+              value: {{ .Values.posture.interval | quote }}
+            - name: ARGUS_POSTURE_EMIT_WARNINGS
+              value: {{ .Values.posture.emitWarnings | quote }}
+            {{- with .Values.posture.ignoredNamespaces }}
+            - name: ARGUS_POSTURE_IGNORED_NAMESPACES
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- with .Values.posture.disabledChecks }}
+            - name: ARGUS_POSTURE_DISABLED_CHECKS
+              value: {{ join "," . | quote }}
+            {{- end }}
+            - name: ARGUS_CERT_PROBE_SERVED
+              value: {{ .Values.certExpiry.probeIngressHosts | quote }}
+            - name: ARGUS_HELM_STATUS_ENABLED
+              value: {{ .Values.helmStatus.enabled | quote }}
+            {{- with .Values.objectCache.excludeKinds }}
+            - name: ARGUS_OBJECT_CACHE_EXCLUDE
+              value: {{ join "," . | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: agent-data
+              mountPath: {{ .Values.dataDir }}
+            {{- if and (dig "argocd" "url" "" (.Values.gitops | default dict)) (dig "argocd" "tokenSecretRef" "name" "" (.Values.gitops | default dict)) }}
+            - name: argocd-token
+              mountPath: /etc/argus/argocd
+              readOnly: true
+            {{- end }}
+            {{- if dig "kubecost" "headersSecretRef" "name" "" (.Values.cost | default dict) }}
+            - name: kubecost-headers
+              mountPath: /etc/argus/kubecost
+              readOnly: true
+            {{- end }}
+            {{- if and (dig "external" "url" "" .Values.metrics) (dig "external" "headersSecretRef" "name" "" .Values.metrics) }}
+            - name: metrics-external-headers
+              mountPath: /etc/argus/metrics-external
+              readOnly: true
+            {{- end }}
+            {{- if and (dig "external" "url" "" .Values.metrics) (dig "external" "caBundle" "" .Values.metrics) }}
+            - name: metrics-external-ca
+              mountPath: /etc/argus/metrics-external-ca
+              readOnly: true
+            {{- end }}
+            {{- with include "argus-agent.hubCAVolumeMount" . }}{{ . | nindent 12 }}{{- end }}
+            {{- if .Values.dryRun.enabled }}
+            # Secret volumes carry no restriction on which Pod may mount
+            # them (unlike the pod's own default-mounted ServiceAccount
+            # token, which is tied to spec.serviceAccountName above) — this
+            # is how a genuinely different identity's credential reaches the
+            # SAME container. readOnlyRootFilesystem (this container's own
+            # securityContext, above) does not prevent mounting a Secret
+            # read-only, which is exactly how this file mounts it.
+            - name: dryrun-token
+              mountPath: {{ .Values.dryRun.tokenMountPath }}
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        {{- if and (dig "argocd" "url" "" (.Values.gitops | default dict)) (dig "argocd" "tokenSecretRef" "name" "" (.Values.gitops | default dict)) }}
+        - name: argocd-token
+          secret:
+            secretName: {{ .Values.gitops.argocd.tokenSecretRef.name }}
+            items:
+              - key: {{ .Values.gitops.argocd.tokenSecretRef.key | default "token" }}
+                path: token
+        {{- end }}
+        {{- if dig "kubecost" "headersSecretRef" "name" "" (.Values.cost | default dict) }}
+        - name: kubecost-headers
+          secret:
+            secretName: {{ .Values.cost.kubecost.headersSecretRef.name }}
+            items:
+              - key: {{ .Values.cost.kubecost.headersSecretRef.key | default "headers" }}
+                path: headers
+        {{- end }}
+        {{- if and (dig "external" "url" "" .Values.metrics) (dig "external" "headersSecretRef" "name" "" .Values.metrics) }}
+        - name: metrics-external-headers
+          secret:
+            secretName: {{ (dig "external" "headersSecretRef" "name" "" .Values.metrics) }}
+            items:
+              - key: {{ (dig "external" "headersSecretRef" "key" "" .Values.metrics) | default "headers" }}
+                path: headers
+        {{- end }}
+        {{- if and (dig "external" "url" "" .Values.metrics) (dig "external" "caBundle" "" .Values.metrics) }}
+        - name: metrics-external-ca
+          configMap:
+            name: argus-agent-metrics-external-ca
+        {{- end }}
+        # Backs ARGUS_AGENT_DATA_DIR above. emptyDir by default — see
+        # values.yaml's `dataDir` comment for what that means across a pod
+        # reschedule/upgrade (a fresh enrollment token is needed; this is a
+        # known, documented limitation, not an oversight) — or a real
+        # PersistentVolumeClaim (templates/pvc.yaml) when persistence.enabled
+        # opts in (BUGS.md 128). Also what makes readOnlyRootFilesystem above
+        # workable either way: this is the one path the agent process ever
+        # writes to (internal/agent/client.go persists key/cert/ca/
+        # fingerprint/hub-endpoint under cfg.DataDir and nowhere else).
+        - name: agent-data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: argus-agent-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- with include "argus-agent.hubCAVolume" . }}{{ . | nindent 8 }}{{- end }}
+      {{- if .Values.dryRun.enabled }}
+        # Backs the mount above — the long-lived
+        # kubernetes.io/service-account-token Secret templates/dryrun.yaml
+        # creates for the argus-dryrun identity, NOT this Pod's own default
+        # token (that one is auto-mounted separately by kubelet, based on
+        # spec.serviceAccountName above, and is never referenced here).
+        - name: dryrun-token
+          secret:
+            secretName: {{ .Values.dryRun.serviceAccount.name }}-token
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

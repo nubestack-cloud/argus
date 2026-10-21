@@ -1,0 +1,194 @@
+# Loop campaign, wave 1 — workload and pod faults (README.md in this directory).
+# Namespace argus-loop-test. Each object carries loop.argus.io/scenario.
+#
+#  S01 ImagePullBackOff, Deployment          → pod-conditions detector → incident
+#  S02 CrashLoopBackOff, permanent            → pod-conditions detector → incident
+#  S03 OOMKilled loop                         → pod-conditions / BackOff → incident
+#  S04 CreateContainerConfigError (missing CM key) → pod-conditions → incident
+#  S05 Pending: requests no node can satisfy  → FailedScheduling / PendingTimeout → incident
+#  S07 Readiness probe always failing         → Unhealthy events + replicas unavailable → incident
+#  S08 Job fails past its backoffLimit        → JobFailed sweep → incident
+#  S09 CronJob whose runs always fail         → JobFailed per run
+#  S10 StatefulSet with an image that never pulls → statefulset-rollout-stalled + pod conditions
+#  S11 DaemonSet with an image that never pulls   → daemonset-rollout-stalled + pod conditions
+#  S22 Deployment naming a ServiceAccount that does not exist → FailedCreate on the ReplicaSet
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s01-bad-image, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S01}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: s01-bad-image}}
+  template:
+    metadata: {labels: {app: s01-bad-image}}
+    spec:
+      containers:
+        - {name: web, image: "nginx:1.27-argus-loop-does-not-exist", ports: [{containerPort: 80}]}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s02-crashloop, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S02}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: s02-crashloop}}
+  template:
+    metadata: {labels: {app: s02-crashloop}}
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "echo 'config: missing DATABASE_URL'; sleep 3; exit 1"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s03-oom, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S03}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: s03-oom}}
+  template:
+    metadata: {labels: {app: s03-oom}}
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          # Holds ~64Mi in a tmpfs-backed shell variable against a 32Mi limit.
+          command: ["sh", "-c", "sleep 2; x=$(head -c 67108864 /dev/zero | tr '\\0' 'a'); sleep 3600"]
+          resources:
+            requests: {memory: 16Mi, cpu: 10m}
+            limits: {memory: 32Mi}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: s04-settings, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S04}}
+data: {LOG_LEVEL: info}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s04-config-key, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S04}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: s04-config-key}}
+  template:
+    metadata: {labels: {app: s04-config-key}}
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+          env:
+            - name: API_URL
+              valueFrom: {configMapKeyRef: {name: s04-settings, key: API_URL}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s05-unschedulable, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S05}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: s05-unschedulable}}
+  template:
+    metadata: {labels: {app: s05-unschedulable}}
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+          resources: {requests: {cpu: "64", memory: 64Mi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s07-readiness, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S07}}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: s07-readiness}}
+  template:
+    metadata: {labels: {app: s07-readiness}}
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.27-alpine
+          ports: [{containerPort: 80}]
+          readinessProbe:
+            httpGet: {path: /healthz-not-served, port: 80}
+            periodSeconds: 5
+            failureThreshold: 2
+---
+apiVersion: batch/v1
+kind: Job
+metadata: {name: s08-failing-job, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S08}}
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 600
+  template:
+    metadata: {labels: {app: s08-failing-job}}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: busybox:1.36
+          command: ["sh", "-c", "echo 'migration 0042 failed: relation users already exists'; exit 2"]
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: s09-failing-cron, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S09}}
+spec:
+  schedule: "*/10 * * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: report
+              image: busybox:1.36
+              command: ["sh", "-c", "echo 'upload failed: 403'; exit 1"]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: s10-db, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S10}}
+spec:
+  clusterIP: None
+  selector: {app: s10-db}
+  ports: [{port: 5432}]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: {name: s10-db, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S10}}
+spec:
+  serviceName: s10-db
+  replicas: 2
+  selector: {matchLabels: {app: s10-db}}
+  template:
+    metadata: {labels: {app: s10-db}}
+    spec:
+      containers:
+        - {name: db, image: "postgres:16-argus-loop-does-not-exist", ports: [{containerPort: 5432}]}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: {name: s11-node-agent, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S11}}
+spec:
+  selector: {matchLabels: {app: s11-node-agent}}
+  template:
+    metadata: {labels: {app: s11-node-agent}}
+    spec:
+      containers:
+        - name: agent
+          image: "busybox:1.36-argus-loop-does-not-exist"
+          command: ["sh", "-c", "sleep 3600"]
+          resources: {requests: {cpu: 5m, memory: 8Mi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s22-missing-sa, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S22}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: s22-missing-sa}}
+  template:
+    metadata: {labels: {app: s22-missing-sa}}
+    spec:
+      serviceAccountName: s22-reporter
+      containers:
+        - {name: app, image: busybox:1.36, command: ["sh", "-c", "sleep 3600"]}

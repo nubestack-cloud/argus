@@ -1,0 +1,59 @@
+# E14 lifecycle matrix, row 6 — "Helm values overridden by a later file" (the
+# render must say "no effective change" — the F26 precedence trap).
+# Campaign context and the full row inventory: README.md in this directory.
+#
+# Also not a plain `kubectl apply` fixture: this row exercises
+# internal/render's evaluateRenderEffect (multi -f Helm precedence), not
+# raw cluster scheduling.
+#
+# Two existing, reusable fixtures already cover this shape and should be
+# reused rather than rebuilt:
+#   - internal/render/testdata/precedence-chart/ — the Go unit-test fixture
+#     (Chart.yaml + values.yaml + values-prod.yaml + templates/deployment.yaml)
+#     exercised by internal/render's own test suite. No cluster needed.
+#   - The REAL, live version of the same shape: charts/cache in
+#     https://github.com/example-org/argocd-argus-test (per the
+#     "project-gitops-test-infra" memory), wired to the real
+#     `argus-gitops-cache` Argo Application on `rke2`.
+#
+# STATUS as of 2026-09-03: this row is the one member of the 18-row matrix
+# that already has strong prior live evidence, from BEFORE this E14 pass —
+# A PRIOR LIVE RUN (2026-08-31, work item F26; that evidence write-up is in
+# git history) did exactly this fixture's scenario for real: added
+# `values-prod.yaml` (replicaCount: 3)
+# to the live repo, forced an Argo sync, watched `spec.replicas` actually
+# move 1->3 on the cluster, then called the real `evaluateRenderEffect` —
+# editing the OVERRIDDEN file (values.yaml) correctly reported
+# `Effective: false`, editing the WINNING file (values-prod.yaml)
+# correctly reported `Effective: true` naming the changed object, and a
+# REAL pull request (argocd-argus-test#71) was opened carrying the
+# rendered delta in its body. Cleaned up afterward (PR closed, repo file
+# and Argo Application reverted).
+#
+# The real gap this E14 pass would still want closed, and did NOT close
+# this session (blocked at the time; the campaign's own status note is in
+# git history): that prior run exercised the render/PR mechanism directly,
+# not through a live ARGUS
+# INCIDENT (detection -> analysis -> approval). There was no fault to
+# *detect* here — a values-file precedence trap has no live Kubernetes
+# symptom of its own until paired with an actual misconfiguration
+# incident. Re-running this row as a genuine end-to-end lifecycle-path
+# test means finding or inducing a real incident on a Helm-templated,
+# multi-values-file GitOps resource, and confirming the resulting PR's
+# render-evidence section is what closes it — not re-proving
+# evaluateRenderEffect in isolation again.
+#
+# RUN 2026-09-06 (E14 unblocked; PROJECT.md "Decided" 2026-09-06). This
+# gap is now closed: built a fresh, dedicated chart
+# (charts/e14row6precedence, own Argo Application, own namespace, own
+# fresh clone of the repo — did not touch charts/cache) with values.yaml
+# (64Mi, healthy-looking) overridden by values-prod.yaml (48Mi, listed
+# second, wins), templated into a container that OOMKills at the lower,
+# effective limit. A real incident detected and auto-analyzed (confidence
+# 1.00), correctly explaining the precedence and naming values-prod.yaml
+# — the winning file — as the one to fix. OpenPR proposed 64Mi for
+# values-prod.yaml, opened as argocd-argus-test#77, merged, Argo synced,
+# pod healthy. resolution_kind='remediated' confirmed directly in
+# Postgres. Full narrative: docs/VERIFICATION.md, "Representative live
+# scenarios", "E14 row 6". Fixture and GitOps commits fully reverted;
+# namespace and Argo Application removed.

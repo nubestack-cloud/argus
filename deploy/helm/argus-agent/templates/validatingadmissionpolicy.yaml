@@ -1,0 +1,1061 @@
+{{- if not (include "argus-agent.skip" .) }}
+{{- if .Values.remediate.enabled }}
+# lld/04-rbac-profiles.md §7.5: "Field-restricting admission policy is
+# mandatory — this pack's RBAC alone would permit rewriting a container's
+# image, security context, or volumes, none of which any workload-recovery
+# action is supposed to touch." One policy per resource type, matching only
+# the argus-remediate identity (any other principal's writes to these
+# resources — a human, GitOps, another controller — are completely
+# unaffected), per §7.5's own sketch.
+#
+# The exact CEL here is this chart's own implementation of §7.5's
+# `argus.onlyAllowedFieldsChanged` (explicitly "illustrative, not a real CEL
+# builtin" in the LLD — the LLD's requirement is that such a policy exists
+# and is correctly scoped, not a specific expression syntax). Written as an
+# explicit allowlist-by-exclusion, split into several `validations` entries
+# (not one giant `&&` chain) so a denial's `message` says exactly which
+# field group tripped it: every field the workload-recovery pack's actions
+# do NOT touch must compare equal between object/oldObject.
+#
+# THE ALLOWLIST — four paths, and nothing else, anywhere in either object:
+#
+#   1. spec.replicas                              (scale_deployment)
+#   2. spec.template.metadata.annotations          (restart_pod's rollout
+#                                                   -restart annotation)
+#   3. spec.template.spec.containers[*].resources  (patch_resource_limits),
+#      further restricted to the cpu and memory keys of limits/requests
+#   4. spec.template.spec.containers[*].image      (revert_container_image),
+#      permitted on Deployments ONLY — a StatefulSet's container image may not
+#      be changed by this pack at all
+#
+# Paths 3 and 4 were each added when their action shipped, and widening this
+# file is the most sensitive part of such a change: this policy is the
+# layer that holds even if everything on the ARGUS side is compromised. The
+# API server enforces it against the argus-remediate ServiceAccount
+# regardless of what the hub sends, what the agent's Go code does, or what a
+# model wrote — it is the only control in the chain that does not depend on
+# ARGUS behaving correctly. So each is deliberately the narrowest thing
+# that makes its action possible, and both are enforced by a separate policy
+# (argus-remediate-pod-template-restriction, at the bottom of this file) whose
+# entire job is those two questions.
+#
+# WHAT PATH 4 DOES AND DOES NOT PROMISE, since `image` is the most powerful
+# field this pack has ever been allowed to write — an image reference is code
+# that will run in the customer's cluster:
+#
+#   - This policy permits an image CHANGE. It cannot possibly restrict WHICH
+#     image, and pretending otherwise would be the dangerous kind of comment.
+#     The RevertContainerImage action's actual constraint is "the image the
+#     container ran in the workload's previous revision", and that is a
+#     statement about the Deployment's ReplicaSets — objects the API server
+#     does not load when it evaluates an admission request, and which CEL here
+#     has no way to reach. "Equals some previous revision" is therefore not
+#     expressible at this layer, at all, and nothing about how the expression
+#     is written would change that.
+#   - So the "provably ran here" property is enforced one layer in, by the
+#     agent: internal/agent/tools.go's revertContainerImage lists the target
+#     Deployment's owned ReplicaSets and refuses unless the image it was asked
+#     to write appears as that container's image in one of them. That check is
+#     what bounds a compromised HUB to images the workload has already run.
+#     This policy's job is the layer below it: bounding a compromised AGENT to
+#     the image field of one Deployment's containers, rather than the whole pod
+#     template.
+#   - It is why path 4 is Deployments-only. That is not a copy of
+#     patch_resource_limits' DaemonSet exclusion (which is about RBAC and this
+#     file's own coverage): a StatefulSet's revision history lives in
+#     ControllerRevisions, which the agent cannot read, so for a StatefulSet
+#     there IS no agent-side "provably ran" check to be the real control. With
+#     nothing above it, opening the image field there would be an unbounded
+#     image write. So the expression below permits an image difference only
+#     when the request targets `deployments`.
+#
+# What paths 3 and 4 still CANNOT touch, inside the very pod template they
+# open: command, args, env/envFrom, volumeMounts, volumeDevices, ports,
+# securityContext, lifecycle, all three probes, imagePullPolicy,
+# workingDir, terminationMessage*, stdin/tty, resizePolicy and the
+# container-level restartPolicy — on the patched container as much as on any
+# other; the container list's length, order and names; initContainers and
+# ephemeralContainers in their entirety (so an image change reaches app
+# containers only, never an init or sidecar-by-init container); and every
+# pod-level field (volumes,
+# serviceAccountName, securityContext, hostNetwork/hostPID/hostIPC,
+# nodeSelector, affinity, tolerations, topologySpreadConstraints,
+# imagePullSecrets, priorityClassName, ...). Note in particular that
+# imagePullSecrets and imagePullPolicy stay closed alongside `image`: this pack
+# can move a container between images the cluster can already pull, and cannot
+# grant itself credentials for a registry the workload never used or force a
+# re-pull of a mutable tag. Within resources it cannot touch
+# `claims` (DRA), and it cannot change — or add, or remove — any resource
+# other than cpu and memory: GPUs, hugepages and every extended resource are
+# compared for equality on both sides, so a workload that requests one can
+# have neither its accelerators altered nor its memory limit raised by this
+# pack. Fail-closed by design; such a workload's fix goes through Git.
+#
+# `has()`-guarded on every field that is genuinely optional/omitempty
+# (metadata.labels/annotations/ownerReferences, spec.template.metadata.
+# finalizers, spec.minReadySeconds, spec.paused, StatefulSet's
+# volumeClaimTemplates/persistentVolumeClaimRetentionPolicy/ordinals) — a
+# bare `object.metadata.ownerReferences ==
+# oldObject...` throws CEL's "no such key" instead of evaluating to a
+# useful boolean when the field is simply absent (the common case for any
+# object not owned by another controller), which a first pass at this
+# policy got wrong and only a real cluster caught: a plain
+# `kubectl create deployment` object has no ownerReferences, no
+# spec.minReadySeconds, and no spec.paused key at all (Kubernetes omits
+# these rather than serializing a zero value), so the naive bare-equality
+# version denied every single scale/restart on an ordinary Deployment, not
+# just the disallowed-field attempts it was meant to catch. Verified live
+# against a kind 1.34 cluster (see this feature's own verification
+# checklist) — required Kubernetes 1.30+ for ValidatingAdmissionPolicy GA.
+#
+# The spec.template.metadata.finalizers clauses added to both per-Kind
+# policies below (BACKLOG.md G6) were NOT re-verified against a real API
+# server or cel-go — no live cluster with remediate.enabled was available
+# when they were added. `helm template`/`helm lint` confirm the chart
+# renders valid YAML and the CEL is syntactically well-formed; the
+# expression is a mechanical copy of the already-live-verified
+# labels/annotations/ownerReferences has()-guard idiom two lines above it in
+# each policy, with only the field path substituted, which is why the risk
+# of a real mistake here is low — but "low risk" is not the same claim as
+# "verified", and this file's own convention is to say which one is true.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: argus-remediate-field-restriction-deployments
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        operations: ["UPDATE"]
+        resources: ["deployments"]
+  matchConditions:
+    - name: only-argus-remediate
+      expression: "request.userInfo.username == 'system:serviceaccount:{{ .Values.namespace.name }}:{{ .Values.remediate.serviceAccount.name }}'"
+  validations:
+    # BACKLOG.md F9's annotateResource/labelResource: metadata.labels and
+    # metadata.annotations used to be compared for EXACT equality,
+    # unconditionally — no key of either map could ever differ. That is now
+    # relaxed, but only by exactly the keys
+    # internal/remediation/annotatelabel.go's own allowlist enumerates
+    # (argus.io/last-remediated-at, argus.io/incident-id for annotations;
+    # argus.io/remediated for labels), and only in the sense of WHICH KEYS
+    # may differ — not to what VALUE. This policy has no way to check "is
+    # this value a well-formed RFC 3339 timestamp" or "is this exactly
+    # 'true'"; that is enforced one layer in, by
+    # AnnotationPermitted/LabelPermitted (hub-side, at plan validation and
+    # again at execution) and by the agent's own re-check before the Patch —
+    # the identical split path 4 (the container image) already documents
+    # above: this policy bounds WHICH FIELD may change, not what it may
+    # change to.
+    #
+    # Each direction is checked separately (every key in the NEW map that is
+    # not allowed must have existed in the OLD map with the SAME value, and
+    # vice versa) so that removing a non-allowlisted key — which a bare
+    # equality check would also catch, but a "does the new map look OK"
+    # check alone would not — is refused exactly like adding or changing one.
+    - expression: >
+        (!has(object.metadata.annotations) || object.metadata.annotations.all(k,
+          k in ['argus.io/last-remediated-at', 'argus.io/incident-id'] ||
+          (has(oldObject.metadata.annotations) && k in oldObject.metadata.annotations && object.metadata.annotations[k] == oldObject.metadata.annotations[k])
+        )) &&
+        (!has(oldObject.metadata.annotations) || oldObject.metadata.annotations.all(k,
+          k in ['argus.io/last-remediated-at', 'argus.io/incident-id'] ||
+          (has(object.metadata.annotations) && k in object.metadata.annotations && object.metadata.annotations[k] == oldObject.metadata.annotations[k])
+        ))
+      message: "argus-remediate may only add/change the argus.io/last-remediated-at or argus.io/incident-id annotations on this Deployment; every other annotation must be unchanged"
+    - expression: >
+        (!has(object.metadata.labels) || object.metadata.labels.all(k,
+          k in ['argus.io/remediated'] ||
+          (has(oldObject.metadata.labels) && k in oldObject.metadata.labels && object.metadata.labels[k] == oldObject.metadata.labels[k])
+        )) &&
+        (!has(oldObject.metadata.labels) || oldObject.metadata.labels.all(k,
+          k in ['argus.io/remediated'] ||
+          (has(object.metadata.labels) && k in object.metadata.labels && object.metadata.labels[k] == oldObject.metadata.labels[k])
+        ))
+      message: "argus-remediate may only add/change the argus.io/remediated label on this Deployment; every other label must be unchanged"
+    - expression: >
+        (has(object.metadata.ownerReferences) == has(oldObject.metadata.ownerReferences)) &&
+        (!has(object.metadata.ownerReferences) || object.metadata.ownerReferences == oldObject.metadata.ownerReferences)
+      message: "argus-remediate may not change this Deployment's ownerReferences"
+    # SENTINEL — the two fields whose loss is catastrophic, kept HERE as well as
+    # in the shared policy.
+    #
+    # Deliberate, reasoned duplication. Conjunctive policies mean the shared
+    # argus-remediate-pod-template-restriction enforces the full pod-template
+    # allowlist as strongly as if it lived here — but only WHILE IT EXISTS. The
+    # repo's own security review (WORKLOG §97, finding F5) pointed out what the
+    # move cost: before it, a missing or broken policy denied everything,
+    # because the restriction lived in the same object as the rest of the
+    # Deployment rules. After it, the shared policy's absence is SILENT — a
+    # half-applied `helm upgrade`, an admission-time cost-estimate rejection of
+    # just the long policy, or an admin deleting one binding leaves these
+    # per-Kind policies happily permitting ANY change inside spec.template.spec.
+    #
+    # Two of those changes are not merely bad, they are a direct path out of
+    # this cluster: serviceAccountName (mount a different, more privileged
+    # token — cluster-admin if one is bound) and volumes (a hostPath mount onto
+    # the node filesystem). Everything else the shared policy forbids is
+    # damaging; these two are escalation.
+    #
+    # So those two are compared here too. Two fields duplicated, not the whole
+    # allowlist: duplicating the long list is exactly the drift the move was
+    # made to prevent, while two named fields are cheap to keep honest and
+    # convert a silent hole into a denial.
+    #
+    # has()-guarded on both sides because a Deployment may legitimately set
+    # neither, and an unguarded comparison of an absent field does not evaluate
+    # to false in CEL — it fails the expression's evaluation, which
+    # failurePolicy: Fail then turns into a denial of every request including
+    # the legitimate ones.
+    - expression: >
+        (has(object.spec.template.spec.serviceAccountName) == has(oldObject.spec.template.spec.serviceAccountName)) &&
+        (!has(object.spec.template.spec.serviceAccountName) || object.spec.template.spec.serviceAccountName == oldObject.spec.template.spec.serviceAccountName) &&
+        (has(object.spec.template.spec.volumes) == has(oldObject.spec.template.spec.volumes)) &&
+        (!has(object.spec.template.spec.volumes) || object.spec.template.spec.volumes == oldObject.spec.template.spec.volumes)
+      message: "argus-remediate may never change the pod template's serviceAccountName or volumes"
+    # spec.template.spec is deliberately NOT compared here any more. The
+    # argus-remediate-pod-template-restriction policy at the bottom of this
+    # file owns that question for both Kinds, and permits exactly two
+    # differences inside it: a container's cpu/memory requests and limits, and
+    # (on a Deployment only) a container's image.
+    #
+    # Moving the check rather than relaxing it in place, and moving it to a
+    # policy shared by both Kinds: ValidatingAdmissionPolicies are
+    # CONJUNCTIVE — every policy matching a request must pass — so a check
+    # that lives in a second policy matching the same resource is enforced
+    # exactly as strongly as one that lives here. What the move buys is that
+    # the pod-template rule (the long one, because "everything except one
+    # field" has to be spelled out in CEL) exists once instead of twice. Two
+    # copies of a field-restriction allowlist drift, and the failure mode of
+    # drift here is one Kind silently permitting what the other forbids.
+    # spec.template.metadata.finalizers (BACKLOG.md G6): left uncompared until
+    # now, alongside labels above — a plain oversight, not an intentionally
+    # open field the way annotations is for restart_pod. A pod template's own
+    # ObjectMeta carries every field a normal object's does, finalizers
+    # included, and nothing about this workload-recovery pack has any
+    # legitimate reason to set one: an arbitrary finalizer string on every pod
+    # this template creates going forward could stall normal pod deletion
+    # indefinitely, waiting on a controller that will never remove it — the
+    # same class of stuck-rollout/denial-of-service concern this whole file
+    # exists to close off, even though it is not itself a privilege
+    # escalation the way serviceAccountName/volumes above are. has()-guarded
+    # for the same reason as labels/annotations/ownerReferences: a template
+    # with no finalizers set is the common case, and Kubernetes omits the key
+    # entirely rather than serializing an empty list.
+    - expression: >
+        object.spec.selector == oldObject.spec.selector &&
+        object.spec.template.metadata.labels == oldObject.spec.template.metadata.labels &&
+        (has(object.spec.template.metadata.finalizers) == has(oldObject.spec.template.metadata.finalizers)) &&
+        (!has(object.spec.template.metadata.finalizers) || object.spec.template.metadata.finalizers == oldObject.spec.template.metadata.finalizers)
+      message: "argus-remediate may not change this Deployment's selector, pod template labels, or pod template finalizers"
+    - expression: >
+        object.spec.strategy == oldObject.spec.strategy &&
+        (has(object.spec.minReadySeconds) == has(oldObject.spec.minReadySeconds)) &&
+        (!has(object.spec.minReadySeconds) || object.spec.minReadySeconds == oldObject.spec.minReadySeconds) &&
+        (has(object.spec.paused) == has(oldObject.spec.paused)) &&
+        (!has(object.spec.paused) || object.spec.paused == oldObject.spec.paused)
+      message: "argus-remediate may only change spec.replicas, the pod template's annotations, a container's cpu/memory resources, a container's image on a Deployment, or (when BACKLOG.md F14's per-execution window is enabled and open) spec.progressDeadlineSeconds"
+    # spec.revisionHistoryLimit was compared here unconditionally until
+    # BACKLOG.md F14. It is now handled two different ways depending on
+    # whether the per-execution widening mechanism exists on this cluster —
+    # see policyController.enabled's own comment in values.yaml.
+    {{- if not .Values.policyController.enabled }}
+    # F14's mechanism is not installed on this cluster: identical to every
+    # field above, spec.progressDeadlineSeconds must be unchanged,
+    # unconditionally, exactly as before this feature existed.
+    - expression: object.spec.progressDeadlineSeconds == oldObject.spec.progressDeadlineSeconds
+      message: "argus-remediate may not change this Deployment's spec.progressDeadlineSeconds"
+    {{- else }}
+    # F14's mechanism IS installed: the equality requirement for
+    # spec.progressDeadlineSeconds moves to the dedicated
+    # argus-remediate-execution-window-widened-fields policy below, which
+    # permits a difference ONLY when a matching per-execution window is
+    # open. Moving the check to a separate, narrowly matchCondition-gated
+    # policy — rather than adding a paramKind/paramRef to THIS policy
+    # directly — is deliberate: a ValidatingAdmissionPolicyBinding's
+    # parameterNotFoundAction is all-or-nothing for every request the
+    # POLICY matches, not per validation clause (see that policy's own doc
+    # comment for the full reasoning). Doing it here would mean a missing or
+    # deleted ExecutionWindow object could either fail-open this entire
+    # policy (Allow) or fail-closed EVERY argus-remediate write to a
+    # Deployment (Deny) — including scale_deployment/restart_pod/
+    # patch_resource_limits/revert_container_image, none of which have
+    # anything to do with this field. The dedicated policy's matchConditions
+    # only ever reach params for a request that is ACTUALLY changing
+    # spec.progressDeadlineSeconds, so neither failure mode can touch the
+    # other four actions.
+    {{- end }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: argus-remediate-field-restriction-deployments
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  policyName: argus-remediate-field-restriction-deployments
+  validationActions: ["Deny"]
+---
+# StatefulSet has a distinct field set from Deployment (serviceName,
+# volumeClaimTemplates, podManagementPolicy, updateStrategy,
+# persistentVolumeClaimRetentionPolicy, ordinals — none of which Deployment
+# has, and vice versa for strategy/progressDeadlineSeconds) — a separate
+# policy, not a shared one, per §7.5's own "one policy per resource type."
+# Same has()-guarding discipline as the Deployment policy above, reasoned
+# from the same omitempty semantics but not independently live-verified
+# against a real StatefulSet in this round — treat as inheriting that
+# policy's live-tested confidence, not as separately proven.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: argus-remediate-field-restriction-statefulsets
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        operations: ["UPDATE"]
+        resources: ["statefulsets"]
+  matchConditions:
+    - name: only-argus-remediate
+      expression: "request.userInfo.username == 'system:serviceaccount:{{ .Values.namespace.name }}:{{ .Values.remediate.serviceAccount.name }}'"
+  validations:
+    # BACKLOG.md F9: identical relaxation to the Deployment policy above, for
+    # the same two allowlists (internal/remediation/annotatelabel.go) — see
+    # that policy's own comment for the full reasoning; not repeated twice
+    # here.
+    - expression: >
+        (!has(object.metadata.annotations) || object.metadata.annotations.all(k,
+          k in ['argus.io/last-remediated-at', 'argus.io/incident-id'] ||
+          (has(oldObject.metadata.annotations) && k in oldObject.metadata.annotations && object.metadata.annotations[k] == oldObject.metadata.annotations[k])
+        )) &&
+        (!has(oldObject.metadata.annotations) || oldObject.metadata.annotations.all(k,
+          k in ['argus.io/last-remediated-at', 'argus.io/incident-id'] ||
+          (has(object.metadata.annotations) && k in object.metadata.annotations && object.metadata.annotations[k] == oldObject.metadata.annotations[k])
+        ))
+      message: "argus-remediate may only add/change the argus.io/last-remediated-at or argus.io/incident-id annotations on this StatefulSet; every other annotation must be unchanged"
+    - expression: >
+        (!has(object.metadata.labels) || object.metadata.labels.all(k,
+          k in ['argus.io/remediated'] ||
+          (has(oldObject.metadata.labels) && k in oldObject.metadata.labels && object.metadata.labels[k] == oldObject.metadata.labels[k])
+        )) &&
+        (!has(oldObject.metadata.labels) || oldObject.metadata.labels.all(k,
+          k in ['argus.io/remediated'] ||
+          (has(object.metadata.labels) && k in object.metadata.labels && object.metadata.labels[k] == oldObject.metadata.labels[k])
+        ))
+      message: "argus-remediate may only add/change the argus.io/remediated label on this StatefulSet; every other label must be unchanged"
+    - expression: >
+        (has(object.metadata.ownerReferences) == has(oldObject.metadata.ownerReferences)) &&
+        (!has(object.metadata.ownerReferences) || object.metadata.ownerReferences == oldObject.metadata.ownerReferences)
+      message: "argus-remediate may not change this StatefulSet's ownerReferences"
+    # SENTINEL — same two escalation fields, same reasoning as the Deployment
+    # policy above (WORKLOG §97 F5): the shared policy's absence is silent, and
+    # serviceAccountName (a more privileged token to mount) plus volumes (a
+    # hostPath onto the node) are the two losses that are escalation rather
+    # than merely damage. Duplicated deliberately, and only these two — copying
+    # the whole allowlist is the drift the move existed to prevent.
+    - expression: >
+        (has(object.spec.template.spec.serviceAccountName) == has(oldObject.spec.template.spec.serviceAccountName)) &&
+        (!has(object.spec.template.spec.serviceAccountName) || object.spec.template.spec.serviceAccountName == oldObject.spec.template.spec.serviceAccountName) &&
+        (has(object.spec.template.spec.volumes) == has(oldObject.spec.template.spec.volumes)) &&
+        (!has(object.spec.template.spec.volumes) || object.spec.template.spec.volumes == oldObject.spec.template.spec.volumes)
+      message: "argus-remediate may never change the pod template's serviceAccountName or volumes"
+    # Same move as the Deployment policy above: spec.template.spec is compared
+    # by argus-remediate-pod-template-restriction, once, for both Kinds.
+    # spec.template.metadata.finalizers (BACKLOG.md G6) — same oversight, same
+    # fix, as the Deployment policy above; see its comment for the reasoning.
+    - expression: >
+        object.spec.selector == oldObject.spec.selector &&
+        object.spec.template.metadata.labels == oldObject.spec.template.metadata.labels &&
+        object.spec.serviceName == oldObject.spec.serviceName &&
+        (has(object.spec.template.metadata.finalizers) == has(oldObject.spec.template.metadata.finalizers)) &&
+        (!has(object.spec.template.metadata.finalizers) || object.spec.template.metadata.finalizers == oldObject.spec.template.metadata.finalizers)
+      message: "argus-remediate may not change this StatefulSet's selector, serviceName, pod template labels, or pod template finalizers"
+    - expression: >
+        object.spec.podManagementPolicy == oldObject.spec.podManagementPolicy &&
+        object.spec.updateStrategy == oldObject.spec.updateStrategy &&
+        (has(object.spec.minReadySeconds) == has(oldObject.spec.minReadySeconds)) &&
+        (!has(object.spec.minReadySeconds) || object.spec.minReadySeconds == oldObject.spec.minReadySeconds) &&
+        (has(object.spec.volumeClaimTemplates) == has(oldObject.spec.volumeClaimTemplates)) &&
+        (!has(object.spec.volumeClaimTemplates) || object.spec.volumeClaimTemplates == oldObject.spec.volumeClaimTemplates) &&
+        (has(object.spec.persistentVolumeClaimRetentionPolicy) == has(oldObject.spec.persistentVolumeClaimRetentionPolicy)) &&
+        (!has(object.spec.persistentVolumeClaimRetentionPolicy) || object.spec.persistentVolumeClaimRetentionPolicy == oldObject.spec.persistentVolumeClaimRetentionPolicy) &&
+        (has(object.spec.ordinals) == has(oldObject.spec.ordinals)) &&
+        (!has(object.spec.ordinals) || object.spec.ordinals == oldObject.spec.ordinals)
+      message: "argus-remediate may only change spec.replicas, the pod template's annotations, a container's cpu/memory resources, or (when BACKLOG.md F14's per-execution window is enabled and open) spec.revisionHistoryLimit on a StatefulSet (a StatefulSet's container image may never be changed by this pack)"
+    # spec.revisionHistoryLimit — same F14 split as the Deployment policy's
+    # spec.progressDeadlineSeconds above; see that policy's own comment for
+    # why this moves to a separate, narrowly matchCondition-gated policy
+    # rather than gaining a paramKind/paramRef directly on this one.
+    {{- if not .Values.policyController.enabled }}
+    - expression: object.spec.revisionHistoryLimit == oldObject.spec.revisionHistoryLimit
+      message: "argus-remediate may not change this StatefulSet's spec.revisionHistoryLimit"
+    {{- end }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: argus-remediate-field-restriction-statefulsets
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  policyName: argus-remediate-field-restriction-statefulsets
+  validationActions: ["Deny"]
+---
+{{/*
+  The pod-template restriction, shared by both Kinds because
+  spec.template.spec is the identical PodSpec on each — see the two policies
+  above, which no longer compare it themselves.
+
+  This is the one policy in this file that permits a change INSIDE the pod
+  template, and it exists because patch_resource_limits has to change a
+  container's cpu/memory requests or limits and there is no other path to
+  that field: a Deployment has no resources subresource, and Kubernetes' own
+  in-place pod resize (pods/resize, and the pod-level spec.resources field
+  behind the PodLevelResources gate) operates on Pods and cannot lower a
+  container's own limit, which is the ceiling an OOMKilled container is dying
+  against. Both were considered and neither fixes the fault; the pod template
+  is where container resources live, so the pod template is what must open.
+
+  It now also permits a container's `image` to differ, on a Deployment only,
+  for revert_container_image. The alternative considered and rejected was the
+  one `kubectl rollout undo` uses — replace the whole pod template with a
+  previous revision's — and it is rejected precisely because of what this
+  policy is: an allowlist of fields. A whole-template restore has no field
+  list, so permitting it means permitting env, volumes, securityContext and
+  serviceAccountName to change on every request, forever, in exchange for a
+  property this layer cannot check anyway ("...and the result equals some
+  previous revision" needs the ReplicaSets, which admission does not have).
+  Reverting one field keeps the allowlist an allowlist; see the top of this
+  file for where the "provably a previous revision" property is enforced
+  instead.
+
+  WHY THIS IS SHAPED AS PROJECTION COMPARISONS RATHER THAN A DIFF
+
+  The rule to express is "these two PodSpecs may differ at exactly
+  containers[*].resources[cpu|memory] and containers[*].image, and nowhere
+  else". CEL cannot state
+  that directly: `object` is a schema-TYPED value, not a map, so its keys can
+  be neither enumerated nor subtracted, and there is no deep-diff builtin. So
+  "everything except X" has to be spelled out as a list of the siblings of X,
+  at each level of the path — which is what the two projection variables
+  below are, generated from the two field lists at the top of this document
+  by argus-agent.celFieldProjection (see _helpers.tpl).
+
+  Split into independent `validations` entries rather than one
+  disjunction, for the reason the rest of this file is split that way — a
+  denial names the level that tripped it — and for a second reason specific
+  to this policy: each expression is cost-estimated separately by the API
+  server, so none has to carry the others' weight against the per-
+  expression limit.
+
+  1. Nothing OUTSIDE the container list changed. Compares every PodSpec
+     field except `containers`, which by construction includes
+     `initContainers` and `ephemeralContainers` as whole values (neither
+     action touches those, so an image revert cannot reach an init container),
+     plus every pod-level field a hostile patch would
+     actually want: volumes, serviceAccountName, securityContext,
+     hostNetwork/hostPID/hostIPC, nodeSelector, affinity, tolerations,
+     imagePullSecrets, and the rest.
+  2. Within the container list, only `resources` and `image` changed — and
+     within
+     `resources`, only cpu and memory. The container projection compares every
+     Container field except those two, index-aligned (so a rename, a
+     reorder, an insertion or a deletion all fail on the `name` term), which
+     leaves them as the only things that may differ. The cpu/memory
+     narrowing is expressible directly, unlike everything else here, because
+     limits/requests really are a map in the schema (additionalProperties of
+     Quantity), so its keys CAN be iterated: every key other than cpu and
+     memory must be present and equal on both sides, and `claims` must be
+     absent on both.
+  3. An image difference is permitted only when the request targets
+     `deployments`. This is the one place in this file where a rule depends on
+     WHICH Kind is being admitted rather than on the objects alone, which is
+     why it reads `request.resource.resource` (the same `request` the
+     matchConditions above already use) instead of being expressed as two
+     separate policies: the pod-template rule is long, and splitting it per
+     Kind to vary one clause would reintroduce exactly the duplication the two
+     per-Kind policies above were rewritten to remove — and a drifting copy
+     here means one Kind silently permitting what the other forbids.
+     Deliberately a separate entry from (2) rather than a term inside it, so a
+     denied StatefulSet image change says so, instead of being reported as a
+     generic container-field violation. Note this entry is what makes the
+     STATEFULSET side fail closed: images must be equal there, and the
+     projection in (2) no longer compares them.
+
+  THE RESIDUAL GAP, stated rather than left to be discovered
+
+  A field-sibling enumeration is complete only against the API version it was
+  written for. This list covers every PodSpec and Container field that is in
+  the schema for Kubernetes 1.30 (this chart's floor — ValidatingAdmissionPolicy
+  reached GA there). Fields added since are NOT compared: PodSpec's
+  `resources` (PodLevelResources, 1.32), `hostnameOverride`
+  (HostnameOverride, 1.34), `workloadRef`/`schedulingGroup`
+  (GenericWorkload), and Container's `restartPolicyRules`
+  (ContainerRestartRules). Naming them here unconditionally would be worse
+  than the gap: a VAP expression referencing a field absent from the cluster's
+  schema fails to COMPILE, so on a 1.30-1.33 cluster the policy object would
+  be rejected and, with failurePolicy: Fail, every argus-remediate write
+  denied. Two things bound the gap in the meantime — each of those fields is
+  behind a feature gate, and a disabled gate means the API server clears the
+  field rather than accepting it, and none of them can be reached by the
+  agent's own code, which builds this patch body from four typed quantities
+  and a container name. Re-check this list against the PodSpec/Container types
+  whenever this chart's minimum Kubernetes version rises, and add whatever has
+  since gone GA.
+
+  VERIFICATION STATUS, stated precisely because "the CEL looks right" is not
+  a claim worth much for the one control that holds when everything else is
+  compromised.
+
+  Verified, when patch_resource_limits added path 3: the expressions below,
+  exactly as this chart renders them, were
+  compiled and EVALUATED with cel-go against hand-built Deployment
+  old/new pairs covering 26 mutations — the allowed change (raise one
+  container's memory limit, with and without a matching request change);
+  scale_deployment's and restart_pod's own patches, which must still pass; and
+  denials for image, env, volumeMounts, container securityContext, container
+  append/drop/reorder/rename, hostPath volume, serviceAccountName,
+  hostNetwork, hostPID, pod securityContext, nodeSelector, tolerations,
+  initContainers, an added GPU limit and an added DRA claim — including each
+  disallowed change made ALONGSIDE a legitimate resources change, which is the
+  case a naive policy waves through. A workload already requesting a GPU is
+  denied even a legitimate memory change (fail-closed, as intended). The
+  conjunction with the per-kind policy above was checked the same way, so the
+  clause moved out of it is provably still enforced. The projection idiom was
+  separately type-checked against declared (non-dyn) types, since the API
+  server's checker is stricter than a dyn-typed harness.
+
+  Verified again when revert_container_image added path 4, by the same method
+  (cel-go, expressions as rendered, variables resolved in declaration order the
+  way the API server resolves them), across 21 old/new pairs. What that run
+  establishes, beyond "it compiles":
+    - an image change on a Deployment passes, alone and alongside a legitimate
+      memory-limit change, and on more than one container;
+    - the SAME image change on a StatefulSet is denied by validation (3), which
+      is the whole point of the per-Kind clause and the one property a
+      symmetrical policy would have silently lost;
+    - scale_deployment's and restart_pod's and patch_resource_limits' own
+      patches all still pass, so widening path 4 cost nothing the other three
+      actions needed;
+    - an image change made ALONGSIDE each of env, command, volumeMounts,
+      imagePullPolicy, container securityContext, a container rename, a
+      container append, a container reorder, serviceAccountName, hostNetwork, a
+      hostPath volume, an initContainer, or an added GPU limit is denied — the
+      case a policy that merely stopped comparing images would wave through,
+      and the reason `image` was removed from the container projection rather
+      than the projection comparison being weakened.
+  The harness itself is not in this repo (it needs cel-go, which the hub and
+  agent do not link); it is reproducible from the field lists and expressions
+  in this file, which is what it read.
+
+  NOT re-verified this round: the declared-type (non-dyn) type-check described
+  above. The new expression's only new constructs are a `.map()` projection
+  identical in shape to the ones already type-checked and a `request.resource.
+  resource` string comparison of the same form as the matchConditions above,
+  which the API server has always accepted.
+
+  NOT verified: no live API server has seen this policy — there is no cluster
+  in this environment. Two things that only a real API server decides are
+  therefore open: whether the policy passes its admission-time CEL cost
+  estimate, and whether the stricter schema-typed checker accepts every
+  expression (a failure in either shows up loudly as a rejected policy object
+  at `helm install` time, not as a silent gap). The Go-side layers — the
+  agent's own re-validation and its live-object check — are unit-tested and do
+  not depend on this policy being present.
+*/}}
+{{- $podSpecFieldsOutsideContainers := list
+    "volumes" "initContainers" "ephemeralContainers" "restartPolicy"
+    "terminationGracePeriodSeconds" "activeDeadlineSeconds" "dnsPolicy"
+    "nodeSelector" "serviceAccountName" "serviceAccount"
+    "automountServiceAccountToken" "nodeName" "hostNetwork" "hostPID"
+    "hostIPC" "shareProcessNamespace" "securityContext" "imagePullSecrets"
+    "hostname" "subdomain" "affinity" "schedulerName" "tolerations"
+    "hostAliases" "priorityClassName" "priority" "dnsConfig" "readinessGates"
+    "runtimeClassName" "enableServiceLinks" "preemptionPolicy" "overhead"
+    "topologySpreadConstraints" "setHostnameAsFQDN" "os" "hostUsers"
+    "schedulingGates" "resourceClaims" -}}
+{{/*
+  Every Container field EXCEPT the two this pack may change: `resources`
+  (patch_resource_limits) and `image` (revert_container_image, Deployments only
+  — validation (3) below is what closes it again for StatefulSets). `name` is
+  deliberately IN the list: it is what index-aligns the two projections, so a
+  renamed, reordered, inserted or deleted container fails this comparison
+  rather than being silently matched against a different container's fields.
+*/}}
+{{- $containerFieldsOutsideResourcesAndImage := list
+    "name" "command" "args" "workingDir" "ports" "envFrom" "env"
+    "resizePolicy" "restartPolicy" "volumeMounts" "volumeDevices"
+    "livenessProbe" "readinessProbe" "startupProbe" "lifecycle"
+    "terminationMessagePath" "terminationMessagePolicy" "imagePullPolicy"
+    "securityContext" "stdin" "stdinOnce" "tty" -}}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: argus-remediate-pod-template-restriction
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        operations: ["UPDATE"]
+        resources: ["deployments", "statefulsets"]
+  matchConditions:
+    - name: only-argus-remediate
+      expression: "request.userInfo.username == 'system:serviceaccount:{{ .Values.namespace.name }}:{{ .Values.remediate.serviceAccount.name }}'"
+  variables:
+    - name: newPod
+      expression: object.spec.template.spec
+    - name: oldPod
+      expression: oldObject.spec.template.spec
+    - name: newPodIdentity
+      expression: {{ include "argus-agent.celFieldProjection" (dict "root" "variables.newPod" "fields" $podSpecFieldsOutsideContainers) | quote }}
+    - name: oldPodIdentity
+      expression: {{ include "argus-agent.celFieldProjection" (dict "root" "variables.oldPod" "fields" $podSpecFieldsOutsideContainers) | quote }}
+    - name: newContainerIdentity
+      expression: {{ printf "variables.newPod.containers.map(c, %s)" (include "argus-agent.celFieldProjection" (dict "root" "c" "fields" $containerFieldsOutsideResourcesAndImage)) | quote }}
+    - name: oldContainerIdentity
+      expression: {{ printf "variables.oldPod.containers.map(c, %s)" (include "argus-agent.celFieldProjection" (dict "root" "c" "fields" $containerFieldsOutsideResourcesAndImage)) | quote }}
+    # The images, index-aligned, as their own projection. Wrapped in a
+    # single-element list per container for the same reason
+    # argus-agent.celFieldProjection wraps every term (an absent `image` yields
+    # [] rather than asking CEL to unify a string with null), which also keeps
+    # "no image set" distinguishable from "image set to the empty string".
+    - name: newContainerImages
+      expression: "variables.newPod.containers.map(c, has(c.image) ? [c.image] : [])"
+    - name: oldContainerImages
+      expression: "variables.oldPod.containers.map(c, has(c.image) ? [c.image] : [])"
+    - name: newResourcesAreCpuMemoryOnly
+      expression: >
+        variables.newPod.containers.all(c, !has(c.resources) || (
+        (!has(c.resources.limits) || c.resources.limits.all(k, k == 'cpu' || k == 'memory')) &&
+        (!has(c.resources.requests) || c.resources.requests.all(k, k == 'cpu' || k == 'memory')) &&
+        !has(c.resources.claims)))
+    - name: oldResourcesAreCpuMemoryOnly
+      expression: >
+        variables.oldPod.containers.all(c, !has(c.resources) || (
+        (!has(c.resources.limits) || c.resources.limits.all(k, k == 'cpu' || k == 'memory')) &&
+        (!has(c.resources.requests) || c.resources.requests.all(k, k == 'cpu' || k == 'memory')) &&
+        !has(c.resources.claims)))
+  validations:
+    # (1) Nothing outside the container list may change.
+    - expression: variables.newPodIdentity == variables.oldPodIdentity
+      message: "argus-remediate may not change any pod-template field outside a container's resources or image (volumes, serviceAccountName, securityContext, host namespaces, scheduling, initContainers, ephemeralContainers, ...)"
+    # (2) Within the container list, only cpu/memory resources and the image
+    #     may change — and the image only on a Deployment, which is (3)'s job.
+    #     Both sides must be cpu/memory-only: if the OLD object requested a
+    #     GPU or a hugepage, this denies rather than comparing blind, so an
+    #     accelerator can neither be altered nor dropped by this pack.
+    - expression: >
+        variables.newContainerIdentity == variables.oldContainerIdentity &&
+        variables.newResourcesAreCpuMemoryOnly &&
+        variables.oldResourcesAreCpuMemoryOnly
+      message: "argus-remediate may only change a container's cpu/memory requests and limits and (on a Deployment) its image: not its command, env, mounts, probes, securityContext or any other field; not the container list's length, order or names; and not any resource other than cpu and memory (extended resources, hugepages and DRA claims must be identical on both sides)"
+    # (3) A container's image may differ only when the object being admitted is
+    #     a Deployment. See the comment block above: a Deployment's owned
+    #     ReplicaSets are what let the agent prove, independently of the hub,
+    #     that the image it is writing already ran on this workload; a
+    #     StatefulSet has no such history the agent can read, so there is no
+    #     layer above this one for it and the field stays shut. Written as
+    #     "images equal OR this is a deployments request" so the fail-closed
+    #     direction is the one that needs no condition to hold.
+    - expression: >
+        variables.newContainerImages == variables.oldContainerImages ||
+        request.resource.resource == 'deployments'
+      message: "argus-remediate may not change a container's image on this resource: an image revert is permitted on Deployments only, because only a Deployment's ReplicaSet history lets the agent verify that the image being set already ran on this workload"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: argus-remediate-pod-template-restriction
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  policyName: argus-remediate-pod-template-restriction
+  validationActions: ["Deny"]
+---
+{{- if .Values.policyController.enabled }}
+# BACKLOG.md F14 — per-execution admission-policy scoping.
+#
+# This is the dedicated policy the two spec.progressDeadlineSeconds/
+# spec.revisionHistoryLimit comments above point to. It is the ONLY policy
+# in this file with a paramKind/paramRef, and it is deliberately kept
+# separate from argus-remediate-field-restriction-{deployments,statefulsets}
+# rather than having a paramKind added to either of THOSE — see the
+# reasoning at length in this file's own comments above this policy's
+# result, repeated here because it is the single most important property
+# of this policy to get right:
+#
+# A ValidatingAdmissionPolicyBinding's paramRef.parameterNotFoundAction is
+# all-or-nothing for the WHOLE policy, for every request the policy
+# matches — confirmed against k8s.io/api/admissionregistration/v1's own
+# ParameterNotFoundActionType doc comments, not assumed: `Allow` means
+# "no matched parameters will be treated as SUCCESSFUL VALIDATION BY THE
+# BINDING" (i.e. every validation in the policy is treated as passed, for
+# every matched request, whenever the param object is missing), and `Deny`
+# means "all requests will be denied if no param resources are found" (i.e.
+# every matched request is denied, regardless of which validation clauses
+# would have passed). Neither is a per-validation-clause behaviour, and
+# there is no way to make it one.
+#
+# If this policy tried to cover the SAME broad match
+# (argus-remediate, Deployments/StatefulSets, UPDATE) as the two big
+# field-restriction policies, a missing/deleted ExecutionWindow object would
+# either fail this whole policy OPEN (Allow — every field those two
+# policies exist to restrict becomes unrestricted the moment this object is
+# absent, which is also the object's completely ordinary state before this
+# cluster's first-ever widened execution) or fail EVERY ordinary
+# scale/restart/resource-limit/image-revert write CLOSED (Deny — an
+# unrelated-feature outage taking down the whole remediation pack).
+#
+# The fix is this policy's matchConditions: the SECOND condition below asks
+# "is this request actually changing spec.progressDeadlineSeconds (on a
+# Deployment) or spec.revisionHistoryLimit (on a StatefulSet)" using only
+# `object`/`oldObject`/`request` — confirmed available to matchConditions
+# without `params` (k8s.io/api's own MatchCondition.Expression doc: object,
+# oldObject, request, authorizer — no params, no variables) — BEFORE this
+# policy's params are ever consulted. A request that isn't touching either
+# field never reaches paramRef resolution at all, so a missing
+# ExecutionWindow object can only ever affect a request that IS trying to
+# change one of these two fields — exactly the narrow blast radius intended,
+# and disjoint from every other action this pack executes.
+#
+# `parameterNotFoundAction: Deny` (rather than Allow) is the correct choice
+# for THIS narrowed policy specifically: a request that reaches here without
+# a matching ExecutionWindow object existing means no widening was ever
+# requested for this write, which must be refused — the same fail-closed
+# posture as every other policy in this file. In ARGUS's own flow this case
+# does not arise in practice: internal/api/executionwindow.go always opens
+# (and, via the agent, creates if absent) the window BEFORE ever attempting
+# the dry-run or real patch that needs it, so the object already exists,
+# with the right entry, by the time this policy is asked to evaluate it. It
+# would arise only if something used the argus-remediate credential
+# directly, bypassing the hub's own open-before-patch ordering entirely — a
+# case this policy is right to deny.
+#
+# paramRef uses a fixed `name`, never a `selector`: k8s.io/api's own
+# ParamRef.Selector doc comment is explicit that multiple matched params are
+# "all evaluated with the policy expressions and the results are ANDed
+# together" — the wrong semantics for "does ANY currently-open window permit
+# this", and a real risk this design avoids entirely by construction rather
+# than by getting a selector's label scheme right: there is exactly one
+# ExecutionWindow object (cluster-scoped, name argus-execution-windows),
+# holding a LIST of concurrently-open windows, and the validation below asks
+# "does ANY entry in that list match" via a plain, unambiguous `.exists()`.
+#
+# NOT verified against a real API server or with cel-go in this round — no
+# live cluster is available in this environment, and the harness this
+# feature's own verification checklist describes was not run for THIS
+# expression's syntax (only reasoned through against k8s.io/api's vendored
+# type documentation, quoted above). What IS true regardless: `helm
+# template`/`helm lint` (this feature's own verification checklist)
+# confirm the chart renders valid YAML with policyController.enabled true
+# and false, and the matchCondition/validation here use only constructs
+# (plain field equality, a single-level `.exists()` over a schema-typed
+# list, `request.resource.resource` string comparison) already exercised in
+# this file's OWN cel-go-verified expressions above — the residual risk is
+# materially lower than that file's own container/pod-template projections,
+# but "lower risk" is not "verified", per this file's own established
+# convention of saying which one is true.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: argus-remediate-execution-window-widened-fields
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  paramKind:
+    apiVersion: argus.io/v1
+    kind: ExecutionWindow
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        operations: ["UPDATE"]
+        resources: ["deployments", "statefulsets"]
+  matchConditions:
+    - name: only-argus-remediate
+      expression: "request.userInfo.username == 'system:serviceaccount:{{ .Values.namespace.name }}:{{ .Values.remediate.serviceAccount.name }}'"
+    - name: only-when-a-widenable-field-actually-changed
+      expression: >
+        (request.resource.resource == 'deployments' && object.spec.progressDeadlineSeconds != oldObject.spec.progressDeadlineSeconds) ||
+        (request.resource.resource == 'statefulsets' && object.spec.revisionHistoryLimit != oldObject.spec.revisionHistoryLimit)
+  validations:
+    - expression: >
+        (request.resource.resource == 'deployments' &&
+         params.spec.windows.exists(w, w.targetUid == object.metadata.uid && w.fieldPath == 'spec.progressDeadlineSeconds')) ||
+        (request.resource.resource == 'statefulsets' &&
+         params.spec.windows.exists(w, w.targetUid == object.metadata.uid && w.fieldPath == 'spec.revisionHistoryLimit'))
+      message: "argus-remediate may change spec.progressDeadlineSeconds (Deployment) or spec.revisionHistoryLimit (StatefulSet) only while a matching BACKLOG.md F14 per-execution window is open for this exact object and field — approve and execute the plan again if this window has since closed or expired"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: argus-remediate-execution-window-widened-fields
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  policyName: argus-remediate-execution-window-widened-fields
+  validationActions: ["Deny"]
+  paramRef:
+    name: argus-execution-windows
+    parameterNotFoundAction: Deny
+{{- end }}
+---
+# argus-remediate-delete-protected-resources — BACKLOG.md F9's deleteResource
+# action type, and the DELETE-verb analogue of the SENTINEL policies above
+# (serviceAccountName/volumes).
+#
+# WHY THIS POLICY LOOKS NOTHING LIKE THE FIELD-RESTRICTION POLICIES ABOVE
+#
+# Every policy above enforces its allowlist by DIFFING: "every field except
+# these must compare equal between object and oldObject." A DELETE request
+# has no `object` at all — the API server never populates it for this
+# operation — so there is nothing to diff against, and "enumerate the fields
+# that must stay equal" is not an expressible policy for this verb. This is
+# exactly the gap this task's own brief asks about directly: what does a
+# delete-shaped ValidatingAdmissionPolicy even check, given there is no
+# oldObject-vs-object comparison to make?
+#
+# The answer this policy gives is NOT "the target matches the signed plan" —
+# a CEL admission policy has no channel to a signed plan at all; that would
+# need a paramRef'd object recording which (gvk, namespace, name) is
+# currently approved for deletion, mirroring the whole argus-execution-
+# windows/ExecutionWindow CRD and controller BACKLOG.md F14 built for a
+# DIFFERENT, narrower purpose (temporarily widening ONE field on ONE object).
+# Building that mechanism's equivalent for delete is a real, separate
+# undertaking this task is not scoped to build.
+#
+# What IS expressible, and genuinely useful, is DESIGN.md §9.3's own
+# ABSOLUTE, deterministic risk modifiers — "anything in kube-system ->
+# minimum high" and "touching a resource labelled tier=data -> minimum
+# high" — enforced here as an unconditional REFUSAL for this verb
+# specifically, at the one layer that holds even if internal/remediation/
+# risk.go's own (Go-side, therefore compromised-hub-reachable) computation
+# of the identical rule is wrong or bypassed, and even if
+# deleteresource.go's kind allowlist were ever widened carelessly to a kind
+# these two modifiers matter more for. It cannot ask "does this object match
+# an approved plan" — nothing at this layer can, for a DELETE — but it can
+# and does ask "is this a kind of object argus-remediate must never delete
+# regardless of any plan", which is the one part of the risk floor that
+# never needed a diff to check in the first place.
+#
+# 'argus-system' is oldObject's namespace being kept in step with risk.go's
+# own hardcoded protectedNamespaces literal — this is deliberately NOT
+# templated from .Values.namespace.name, because risk.go's Go-side floor
+# isn't either; templating one and not the other would let the two silently
+# diverge on a cluster that renamed the agent's namespace.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: argus-remediate-delete-protected-resources
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["DELETE"]
+        resources: ["pods"]
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        operations: ["DELETE"]
+        resources: ["jobs"]
+      # PersistentVolumeClaim (added 2026-09-01, BUGS.md 118 part (b)) —
+      # without this rule, widening deleteresource.go's Go-side allowlist and
+      # the RBAC grant above would let a PVC delete reach the API server
+      # with NO admission-time backstop at all: matchConstraints controls
+      # which requests this policy even SEES, so a resource absent here
+      # sails past the protected-namespace/tier=data checks below
+      # regardless of what internal/remediation/risk.go computes or what the
+      # signed plan claims. Added alongside the allowlist/RBAC change
+      # deliberately, not as an afterthought — this file's own header
+      # comment already names exactly this risk ("even if deleteresource.go's
+      # kind allowlist were ever widened carelessly to a kind these two
+      # modifiers matter more for").
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["DELETE"]
+        resources: ["persistentvolumeclaims"]
+  matchConditions:
+    - name: only-argus-remediate
+      expression: "request.userInfo.username == 'system:serviceaccount:{{ .Values.namespace.name }}:{{ .Values.remediate.serviceAccount.name }}'"
+  validations:
+    - expression: >
+        !(oldObject.metadata.namespace in ['kube-system', 'kube-public', 'kube-node-lease', 'argus-system'])
+      message: "argus-remediate may never delete anything in a cluster-owned or ARGUS-owned namespace"
+    - expression: >
+        !has(oldObject.metadata.labels) || !('tier' in oldObject.metadata.labels) || oldObject.metadata.labels['tier'] != 'data'
+      message: "argus-remediate may never delete a resource labelled tier=data"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: argus-remediate-delete-protected-resources
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  policyName: argus-remediate-delete-protected-resources
+  validationActions: ["Deny"]
+---
+# argus-remediate-create-protected-targets — BACKLOG.md F9's createResource
+# action type, the CREATE-verb analogue of the policy immediately above.
+#
+# WHY THIS POLICY LOOKS DIFFERENT AGAIN FROM BOTH THE FIELD-RESTRICTION AND
+# THE DELETE-PROTECTED-RESOURCES POLICIES ABOVE
+#
+# The field-restriction policies diff object against oldObject. The delete
+# policy above has only oldObject (a DELETE request carries no `object` at
+# all). CREATE is the third, distinct shape: it has an `object` — the thing
+# being created — but NO oldObject, since nothing existed a moment ago for
+# there to be an "old" version of. So "enumerate the fields that must equal"
+# is not expressible here either, for a reason specific to this verb: there
+# is nothing on the other side of the equals sign. What IS expressible, and
+# what this policy checks, is a property of the OBJECT BEING CREATED taken
+# alone.
+#
+# WHAT THIS POLICY DOES AND DOES NOT CHECK
+#
+# Same posture as argus-remediate-delete-protected-resources: this is NOT
+# "does this object match an approved plan" (no CEL admission policy has a
+# channel to a signed plan — see that policy's own comment for why building
+# one, mirroring F14's ExecutionWindow mechanism for a different purpose, is
+# real, separate scope this task is not building) and NOT "does an object
+# with this name already exist" (a CREATE request's admission-time view has
+# no way to ask that beyond the apiserver's own built-in conflict check,
+# which already refuses a genuine name collision with AlreadyExists — this
+# policy adds nothing there). What it DOES check, unconditionally, on the
+# object being admitted:
+#
+#   1. DESIGN.md §9.3's two absolute, deterministic risk modifiers —
+#      protected namespaces and tier=data — applied to the OBJECT BEING
+#      CREATED, mirroring the delete policy's identical checks against
+#      oldObject. Same reasoning: this is the layer that holds even if
+#      internal/remediation/risk.go's own Go-side computation of the
+#      identical rule is wrong or bypassed.
+#   2. No ownerReferences and no finalizers. This pack never legitimately
+#      sets either on an object it creates (RemediationPlan carries no field
+#      for either), so refusing them closes off a forged-ownership or
+#      stuck-deletion mischief a compromised agent could otherwise attempt —
+#      the CREATE-verb analogue of the field-restriction policies'
+#      serviceAccountName/volumes SENTINEL checks above, and of this
+#      concern already being named for ownerReferences there.
+#
+# has()-guarded on both, matching this file's own established idiom
+# (documented at length near the top of this file): an ordinary `kubectl
+# create configmap` object has neither key at all, and a bare equality/
+# membership check against an absent key throws in CEL rather than
+# evaluating false.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: argus-remediate-create-protected-targets
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["configmaps"]
+  matchConditions:
+    - name: only-argus-remediate
+      expression: "request.userInfo.username == 'system:serviceaccount:{{ .Values.namespace.name }}:{{ .Values.remediate.serviceAccount.name }}'"
+  validations:
+    - expression: >
+        !(object.metadata.namespace in ['kube-system', 'kube-public', 'kube-node-lease', 'argus-system'])
+      message: "argus-remediate may never create anything in a cluster-owned or ARGUS-owned namespace"
+    - expression: >
+        !has(object.metadata.labels) || !('tier' in object.metadata.labels) || object.metadata.labels['tier'] != 'data'
+      message: "argus-remediate may never create a resource labelled tier=data"
+    - expression: >
+        !has(object.metadata.ownerReferences) || size(object.metadata.ownerReferences) == 0
+      message: "argus-remediate may never create a resource with ownerReferences already set"
+    - expression: >
+        !has(object.metadata.finalizers) || size(object.metadata.finalizers) == 0
+      message: "argus-remediate may never create a resource with finalizers already set"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: argus-remediate-create-protected-targets
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  policyName: argus-remediate-create-protected-targets
+  validationActions: ["Deny"]
+---
+# GitOps quick actions (docs/CLUSTER_INSIGHT_SPECS.md CI-S15): argus-remediate
+# may change exactly one thing on an Argo CD Application or a Flux object —
+# the controller's "act now" annotation. Spec, labels, finalizers, owner
+# references and every other annotation must be unchanged, so the patch can
+# only request a refresh/reconcile, never alter what Git deploys.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: argus-remediate-gitops-reconcile-only
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["argoproj.io"]
+        apiVersions: ["*"]
+        operations: ["UPDATE"]
+        resources: ["applications"]
+      - apiGroups: ["kustomize.toolkit.fluxcd.io", "helm.toolkit.fluxcd.io", "source.toolkit.fluxcd.io"]
+        apiVersions: ["*"]
+        operations: ["UPDATE"]
+        resources: ["kustomizations", "helmreleases", "gitrepositories", "helmrepositories", "ocirepositories"]
+  matchConditions:
+    - name: only-argus-remediate
+      expression: "request.userInfo.username == 'system:serviceaccount:{{ .Values.namespace.name }}:{{ .Values.remediate.serviceAccount.name }}'"
+  validations:
+    - expression: "!has(object.spec) && !has(oldObject.spec) || (has(object.spec) && has(oldObject.spec) && object.spec == oldObject.spec)"
+      message: "argus-remediate may not change the spec of a GitOps object"
+    - expression: >
+        (has(object.metadata.labels) == has(oldObject.metadata.labels)) &&
+        (!has(object.metadata.labels) || object.metadata.labels == oldObject.metadata.labels)
+      message: "argus-remediate may not change a GitOps object's labels"
+    - expression: >
+        (has(object.metadata.finalizers) == has(oldObject.metadata.finalizers)) &&
+        (!has(object.metadata.finalizers) || object.metadata.finalizers == oldObject.metadata.finalizers)
+      message: "argus-remediate may not change a GitOps object's finalizers"
+    - expression: >
+        (!has(object.metadata.annotations) || object.metadata.annotations.all(k,
+          k in ['argocd.argoproj.io/refresh', 'reconcile.fluxcd.io/requestedAt'] ||
+          (has(oldObject.metadata.annotations) && k in oldObject.metadata.annotations && object.metadata.annotations[k] == oldObject.metadata.annotations[k])
+        )) &&
+        (!has(oldObject.metadata.annotations) || oldObject.metadata.annotations.all(k,
+          k in ['argocd.argoproj.io/refresh', 'reconcile.fluxcd.io/requestedAt'] ||
+          (has(object.metadata.annotations) && k in object.metadata.annotations && object.metadata.annotations[k] == oldObject.metadata.annotations[k])
+        ))
+      message: "argus-remediate may only set argocd.argoproj.io/refresh or reconcile.fluxcd.io/requestedAt on a GitOps object"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: argus-remediate-gitops-reconcile-only
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  policyName: argus-remediate-gitops-reconcile-only
+  validationActions: ["Deny"]
+{{- end }}
+{{- end }}

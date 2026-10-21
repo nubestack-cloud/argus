@@ -1,0 +1,12 @@
+-- Reverses 000037. Dropping the table takes its index and both policies with
+-- it, so they are not dropped individually — the same shape 000034's down
+-- migration uses for ai_providers.
+--
+-- Lossy, and stated rather than hidden: every recorded tool call is discarded.
+-- Nothing else depends on these rows (no foreign key points at them, and
+-- internal/api renders the aggregate as absent rather than as zero when the
+-- table has nothing for an incident), so a rollback loses the evidence summary
+-- on already-analysed incidents and changes nothing else. That is the correct
+-- trade for a down migration whose purpose is rolling back a bad deploy, not
+-- round-tripping data.
+DROP TABLE mcp_tool_calls;

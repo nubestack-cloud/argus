@@ -1,0 +1,128 @@
+# E14 lifecycle matrix, row 8 — correlation merge: one object, two detectors, one
+# incident (or, if the mechanism doesn't reach across tiers, evidence that it
+# doesn't).
+# Campaign context and the full row inventory: README.md in this directory.
+#
+# The matrix's own text: "Two different detectors on the SAME object (e.g. a
+# Deployment's Pods CrashLooping *and* the Deployment's own
+# GenericConditionAnomaly:Available) MUST fold into ONE incident via
+# object_key, not two."
+#
+# Fixture: a single-replica Deployment whose container always exits non-zero
+# (same pattern as row07) — this drives two independent things:
+#   1. CrashLoopBackOff on the POD -> pre-E11 pod-conditions detector fires,
+#      a Pod-object finding with WorkloadGVK/WorkloadName resolved to this
+#      Deployment (workload-tier correlation).
+#   2. The Deployment never reaches Ready, so its own `Available` condition
+#      goes False and STAYS False (LastTransitionTime never resets, because
+#      the pod keeps failing the same way) — once that holds for
+#      defaultSweepSustainedThreshold (10 minutes), E11's
+#      checkGenericConditions predicate fires GenericConditionAnomaly:Available
+#      on the DEPLOYMENT object itself (object-tier correlation, since a
+#      Deployment finding never resolves a WorkloadName of its own).
+#
+# What this actually tests: whether the hub's correlation layer bridges a
+# Pod-tier (workload_key) finding and a Deployment-tier (object_key) finding
+# about the same logical workload into ONE incidents row, per lesson 8
+# ("correlation keys on the object, not the symptom", migration 000036) and
+# this row's own text ("Tests the correlation LAYER itself ... not
+# detection, not remediation").
+#
+# NOTE — read internal/gateway/finding.go's correlationIdentity and
+# internal/agent/sweep_detector.go's checkReplicaFailure doc comment
+# ("Overlap 2") before assuming a merge failure here is a NEW bug: that
+# comment already documents a closely related case (a ReplicaSet mirroring
+# a Deployment's own condition) where carrying WorkloadGVK/WorkloadName on a
+# non-Pod object finding "to let the hub's workload tier fold the two
+# together...was rejected" as changing pod-sibling-correlation grouping
+# semantics beyond that one check's own scope. If this fixture also produces
+# two incidents, it may be the SAME accepted tradeoff surfacing on a second,
+# undocumented pair (Pod CrashLoop <-> Deployment's own condition anomaly)
+# rather than a fresh defect — record it as a finding either way and let the
+# owner decide which reading applies, per this task's own two-reading
+# discipline.
+#
+# Usage:
+#   kubectl apply -f row08-correlation-merge-two-detectors-one-object.yaml
+#   kubectl -n e14-row08 get pods -w   # watch CrashLoopBackOff climb
+#   # wait >10 minutes for the Deployment's own Available condition to clear
+#   # the sustained-window threshold, then check Postgres:
+#   #   SELECT id, object_key, workload_key, opening_reason, occurrence_count
+#   #   FROM incidents WHERE cluster_id = '<rke2 cluster id>'
+#   #     AND (object_key ILIKE '%row08-crashloop%' OR workload_key ILIKE '%row08-crashloop%');
+#   kubectl delete -f row08-correlation-merge-two-detectors-one-object.yaml
+#
+# LIVE RUN, 2026-09-03, rke2 (full evidence write-up in git history): the
+# answer is TWO incidents, not one. The Pod's CrashLoopBackOff/BackOff
+# findings opened inc_01m1mq8rmqcrpw7fd4k245s1ze at 22:47:10
+# (workload_key = apps/v1/Deployment|e14-row08|row08-crashloop). Once the
+# readinessProbe fix above let Available stay continuously False from
+# 23:03:21, a k8s-sweep finding (reason=DeploymentReplicasUnavailable, the
+# OLD pre-E11 hardcoded check, not E11's checkGenericConditions -- that
+# condition already has a dedicated hardcoded rule so the generic predicate
+# may never independently fire on it) opened a SEPARATE incident,
+# inc_01m1mrt49z76fhj04n5pm22psf, at 23:14:07 -- confirmed directly against
+# Postgres, not inferred. Root cause read from
+# internal/gateway/finding.go's correlationIdentity.find(): it looks up an
+# existing incident by exactly one tier (workload_key if the finding
+# carries one, else object_key, never both/fallback), and this Deployment
+# finding carries no workload_key of its own, so it can never match the
+# Pod-tier incident. This is the SAME accepted tradeoff
+# sweep_detector.go's own "Overlap 2" comment already documents for a
+# different pair (a ReplicaSet mirroring its Deployment's condition),
+# confirmed live here on a second, previously undocumented pair -- not a
+# fresh defect. Both incidents left open in the DB as the evidentiary
+# record. Namespace deleted and confirmed gone afterward.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e14-row08
+  labels:
+    e14-lifecycle-matrix: "true"
+    e14-row: "row08-correlation-merge-two-detectors-one-object"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: row08-crashloop
+  namespace: e14-row08
+  labels:
+    app: row08-crashloop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: row08-crashloop
+  template:
+    metadata:
+      labels:
+        app: row08-crashloop
+    spec:
+      containers:
+        - name: crasher
+          image: busybox:1.36
+          command: ["sh", "-c", "echo starting; sleep 5; echo dying now; exit 1"]
+          resources:
+            requests:
+              cpu: "25m"
+              memory: "16Mi"
+          # LIVE FINDING (2026-09-03, added mid-run after the first apply):
+          # without a readinessProbe, a container with no probe at all is
+          # marked Ready the instant it reaches Running — including during
+          # this fixture's own 5-second "sleep 5" window before it exits
+          # again. That is enough for the Deployment controller to flip
+          # `Available` True for a few seconds on EVERY restart cycle,
+          # which resets `lastTransitionTime` every time and means
+          # `Available` never accumulates defaultSweepSustainedThreshold's
+          # 10 minutes of CONTINUOUS False — confirmed live: this
+          # Deployment's own `Available` condition's `lastTransitionTime`
+          # visibly jumped from 22:53:01 to 22:58:15 with no code change on
+          # our part, i.e. it flipped and came back. An always-failing
+          # readinessProbe (below) was patched into the live Deployment at
+          # 23:00:37 to close this and is folded back into this file so a
+          # future re-run of this fixture doesn't hit the same trap.
+          readinessProbe:
+            exec:
+              command: ["cat", "/nonexistent-marker"]
+            periodSeconds: 2
+            failureThreshold: 1

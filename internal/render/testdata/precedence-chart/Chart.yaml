@@ -1,0 +1,12 @@
+apiVersion: v2
+name: precedence-fixture
+description: >
+  F26's values-file-precedence fixture. Two values files apply in order —
+  values.yaml (chart default), then values-prod.yaml (the later file an Argo
+  Application's spec.source.helm.valueFiles would list) — so replicaCount set
+  in values.yaml is always overridden by values-prod.yaml's own replicaCount.
+  An edit to values.yaml alone can never change the rendered Deployment; only
+  an edit to values-prod.yaml (or removing it) can.
+type: application
+version: 0.1.0
+appVersion: "1.0"

@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS timeline_events;
+DROP TABLE IF EXISTS evidence;
+DROP TABLE IF EXISTS analyses;
+DROP TABLE IF EXISTS incidents;

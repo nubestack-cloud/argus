@@ -1,0 +1,45 @@
+-- Index findings by the incident they belong to.
+--
+-- Found while fixing BUGS.md item 30 (an incident detail page that
+-- rendered its whole history). The display side of that bug is fixed, but the
+-- query underneath it had no supporting index at all:
+--
+--   EXPLAIN SELECT count(*) FROM findings WHERE incident_id = '...'
+--     ->  Append
+--           ->  Seq Scan on findings_y2026m08
+--           ->  Seq Scan on findings_y2026m09
+--           ->  Seq Scan on findings_default
+--
+-- findings' two existing indexes are (id, occurred_at) and
+-- (cluster_id, fingerprint, occurred_at DESC) — neither helps a lookup by
+-- incident. So every incident-detail request sequentially scanned every
+-- partition of the table.
+--
+-- That measured at 0.25ms here, which is exactly why it is worth doing now
+-- rather than later: it is fast only because this database holds a couple of
+-- hundred findings. The scan cost grows with every finding ever recorded, across
+-- all partitions, and GET /incidents/{id} is polled every 5 seconds by every
+-- open detail page. At fleet scale that is a full-table scan per tab per five
+-- seconds, and the symptom would appear as general hub slowness long after the
+-- cause stopped being obvious.
+--
+-- Column order: incident_id first (the equality predicate), occurred_at DESC
+-- second, because the detail query orders newest-first and its window functions
+-- rank by recency within each reason — so the index can serve both the filter
+-- and the ordering without a sort.
+--
+-- Partial, because incident_id is nullable and the NULLs are not a small
+-- accident: internal/gateway/finding.go deliberately records a finding with a
+-- NULL incident_id when storm protection suppresses new-incident creation
+-- ("arrived, but not correlated"). Those rows can never satisfy a
+-- WHERE incident_id = ... lookup, so excluding them keeps the index smaller and
+-- avoids paying to index precisely the rows this query never wants.
+--
+-- Not CONCURRENTLY: golang-migrate runs each migration inside a transaction, and
+-- CREATE INDEX CONCURRENTLY cannot run in one. Acceptable here — the write lock
+-- is taken per partition and this table is small at the point any deployment
+-- applies this. A fleet with a very large findings table should build it
+-- concurrently by hand first, then apply this migration as a no-op.
+CREATE INDEX IF NOT EXISTS findings_incident_idx
+    ON findings (incident_id, occurred_at DESC)
+    WHERE incident_id IS NOT NULL;

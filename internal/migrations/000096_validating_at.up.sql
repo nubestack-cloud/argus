@@ -1,0 +1,24 @@
+-- PROJECT.md B139: ValidationSweeper's pull-request-route eligibility check
+-- compared i.last_seen against incidents.pr_merged_at — the GitHub merge
+-- instant, not the moment the fix actually landed on the cluster. GitOps
+-- sync happens some real time after merge, and the still-broken workload
+-- legitimately keeps emitting findings until sync completes, so last_seen
+-- routinely ends up AFTER pr_merged_at through nothing but ordinary
+-- reconciliation lag — and since last_seen never moves backward, the
+-- incident can then never satisfy the check and is stuck in Validating
+-- forever. Live-reproduced 2026-09-05: merge 19:24:38Z, sync 19:28:12Z,
+-- last real finding 19:27:37Z — after the merge, before the sync.
+--
+-- validating_at is the moment this repo's own precedent (resolved_at,
+-- migration 000065) already establishes for "record when a state was
+-- actually entered, in the one function that writes incidents.state, rather
+-- than reusing a column that means something else." Nullable, no backfill,
+-- for the identical reason resolved_at has none: an incident that entered
+-- Validating before this migration has no honest value to give it.
+--
+-- internal/orchestrator.SetState sets this whenever the NEW state is
+-- Validating (from either route — AwaitingMerge or Executing), even though
+-- only the pull-request route's sweep query needs it; the in-place route
+-- already has a correct clock in remediation_executions.executed_at and
+-- keeps using it unchanged.
+ALTER TABLE incidents ADD COLUMN validating_at timestamptz;

@@ -1,0 +1,39 @@
+# Go
+/bin/
+# `go build ./cmd/<name>` with no -o writes the binary to the repo root; these
+# were committed by accident once (53 MB each for the hub). Build artifacts
+# never belong in Git.
+/hub
+/agent
+/argusctl
+/cli-runner
+/eval-harness
+/coverage
+*.test
+*.out
+
+# Node (analysis-engine, web)
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# Local dev / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editor/OS
+.DS_Store
+.idea/
+*.swp
+
+# Design canvas — the seeded output is ~2MB of editor payload and is
+# regenerated from the .dc.html sources; keep the sources, not the build.
+.design/*.html
+!.design/*.dc.html
+
+# Personal Claude Code settings: local permissions, never shared.
+.claude/settings.local.json

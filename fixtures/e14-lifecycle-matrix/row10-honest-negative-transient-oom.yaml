@@ -1,0 +1,120 @@
+# E14 lifecycle matrix, row 10 — honest negative: investigable kind, correctly
+# "could not determine root cause."
+# Campaign context and the full row inventory: README.md in this directory.
+#
+# The matrix wants a real, transient symptom whose CAUSAL evidence has
+# already rolled out of the investigation window by the time analysis runs
+# — testing that the model says "could not determine" rather than
+# confidently guessing on stale/insufficient evidence (non-negotiable 8).
+#
+# Engineering note (read before assuming a clean result either way): this
+# is acknowledged by this row's own text as "inherently a bit fiddly to
+# engineer deliberately." Two things make an OOM-based fixture harder to
+# force clean than it first looks:
+#   1. `containerStatuses[].lastState.terminated` does NOT expire with
+#      time — it is only ever overwritten by a LATER container restart, so
+#      a container that OOMs once and then just stays Running forever still
+#      shows "lastState: OOMKilled" to describe_resource indefinitely. This
+#      fixture's container therefore restarts a SECOND time on purpose,
+#      with a normal (exit 0) termination, specifically to overwrite
+#      lastState with something uninformative before analysis ever runs —
+#      the OOM is no longer visible in the object's OWN current status by
+#      the time /analyze is triggered.
+#   2. The real Kubernetes Warning Event (`OOMKilling`/`BackOff`) that
+#      accompanied the original OOM is NOT erased by this trick — it ages
+#      out on the API server's own `--event-ttl` (measured live on rke2,
+#      2026-09-03: the oldest event still visible was ~58.7 minutes old,
+#      i.e. the default ~1h TTL, not shortened here). This fixture does
+#      NOT wait out a full hour for that event to expire — doing so was
+#      judged not worth this pass's time budget. Whatever this fixture's
+#      own write-up says about the result (the LIVE RUN note below, and the
+#      fuller version in git history)
+#      should be read with that honestly stated: the object's OWN status
+#      evidence is engineered to be gone, but the raw Warning Event may
+#      still be fetchable by a tool call for up to an hour after the fact,
+#      which is a materially easier case than the row's own ideal ("evidence
+#      has already rolled out of the investigation window").
+#
+# Mechanism: a bare Pod (not owned by any controller — the finding/incident
+# targets this exact object, no workload-tier indirection to complicate
+# reading the result) with an emptyDir marker file that survives container
+# restarts within the same Pod sandbox (but not a Pod recreate):
+#   run 1 (no marker): allocate ~200MB into a shell variable against a 20Mi
+#     memory limit -> OOMKilled (exit 137, SIGKILL) almost immediately.
+#   run 2 (first marker present): exit 0 immediately -> kubelet restarts
+#     into run 3, and `lastState` now reads this normal exit, not the OOM.
+#   run 3 (second marker present): sleep forever -> stable from then on,
+#     Running/Ready, no further restarts.
+#
+# Usage:
+#   kubectl apply -f row10-honest-negative-transient-oom.yaml
+#   kubectl -n e14-row10 get pod row10-transient-oom -w   # watch restartCount reach 2, phase settle on Running
+#   kubectl -n e14-row10 get pod row10-transient-oom -o jsonpath='{.status.containerStatuses[0].lastState}'
+#   # once restartCount=2 and lastState is NOT OOMKilled, wait some more,
+#   # then POST /api/v1/incidents/{id}/analyze on whichever incident this
+#   # Pod's OOMKilled finding opened, and read the result honestly.
+#   kubectl delete -f row10-honest-negative-transient-oom.yaml
+#
+# LIVE RUN, 2026-09-03, rke2 (full evidence write-up in git history): real
+# incident (inc_01m1mqs51b6pcmyyc567yjsv21), auto-analysed
+# (an_01m1mqtjtg1jbm9s7k959my0hj, confidence 1.00) -- but NOT the outcome
+# this row wants. The model never had to say "could not determine": tool
+# calls could still read the container's own COMMAND (the shell script
+# encoding the deliberate 200MB-vs-20Mi allocation), which is durable spec
+# evidence this fixture's lastState-overwriting trick never touches. It
+# correctly reconstructed the whole story and proposed no plan -- a real,
+# correctly-diagnosed incident, just not evidence of the honest-non-answer
+# behavior row 10 exists to test. A future fixture for this row needs the
+# deliberate cause to NOT be legible in the Pod spec at all (e.g. driven by
+# an external script/configmap a tool call can't read), not just erased
+# from runtime status.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e14-row10
+  labels:
+    e14-lifecycle-matrix: "true"
+    e14-row: "row10-honest-negative-transient-oom"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: row10-transient-oom
+  namespace: e14-row10
+  labels:
+    app: row10-transient-oom
+spec:
+  restartPolicy: Always
+  volumes:
+    - name: marker
+      emptyDir: {}
+  containers:
+    - name: transient
+      image: busybox:1.36
+      command:
+        - sh
+        - -c
+        - |
+          if [ -f /marker/run2 ]; then
+            echo "run 3+: stable now, sleeping forever"
+            sleep infinity
+          elif [ -f /marker/run1 ]; then
+            echo "run 2: exiting cleanly to overwrite lastState"
+            touch /marker/run2
+            exit 0
+          else
+            echo "run 1: allocating ~200MB against a 20Mi limit"
+            touch /marker/run1
+            x=$(head -c 200000000 /dev/zero | tr '\0' 'a')
+            echo "should never reach here: ${#x}"
+          fi
+      volumeMounts:
+        - name: marker
+          mountPath: /marker
+      resources:
+        requests:
+          cpu: "25m"
+          memory: "20Mi"
+        limits:
+          cpu: "100m"
+          memory: "20Mi"

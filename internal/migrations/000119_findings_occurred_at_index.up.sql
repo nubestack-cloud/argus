@@ -1,0 +1,66 @@
+-- Index findings for the fleet-wide, newest-first scan GET /api/v1/findings
+-- makes (internal/api/findings.go, PROJECT.md F31).
+--
+-- findings carries four indexes before this one, and not one of them helps:
+--
+--   * the (id, occurred_at) primary key from migration 000004;
+--   * (cluster_id, fingerprint, occurred_at DESC), also 000004 — leads with an
+--     equality column this query does not always have;
+--   * the partial (incident_id, occurred_at DESC) from 000039 — excludes, by
+--     construction, exactly the rows this endpoint exists to show (a finding
+--     that never became an incident has incident_id IS NULL);
+--   * the GIN index on references_out from 000100.
+--
+-- The query the findings list actually runs has no equality predicate at all
+-- in its default, fleet-wide shape:
+--
+--   SELECT ... FROM findings JOIN clusters ON clusters.id = findings.cluster_id
+--    WHERE findings.occurred_at >= $1
+--    ORDER BY findings.occurred_at DESC, findings.id DESC
+--    LIMIT $2
+--
+-- so it is a sequential scan of every partition in the window plus a top-N
+-- sort, per request. The second, exact-counts query in the same handler runs
+-- over the same predicate and cannot use a top-N shortcut at all.
+--
+-- MEASURED, on a scratch database holding 200,000 findings spread over 60
+-- days, EXPLAIN (ANALYZE, BUFFERS) on exactly the query above:
+--
+--   without this index   Parallel Seq Scan + top-N heapsort
+--                        5,595 shared buffer hits, 35.2 ms
+--   with it              Index Scan using findings_default_occurred_at_id_idx
+--                           55 shared buffer hits,  0.19 ms
+--
+-- and the keyset continuation — the same query plus
+-- `(occurred_at, id) < ($1, $2)` — costs 2 buffer hits, because the cursor is
+-- a position in this index rather than a filter applied after reading.
+--
+-- WHY NOW RATHER THAN WHEN IT HURTS. The screen this serves
+-- (web/src/pages/SignalsPage.tsx) polls, and findings is the highest-volume
+-- table in the schema — every detector re-sends its own fingerprint once per
+-- resend cooldown for as long as a problem persists. An unindexed
+-- fleet-wide ORDER BY behind a poll is the same failure shape migration
+-- 000039 was written for, one table-scan-per-tab-per-tick, and it is cheap to
+-- pre-empt while the table is small.
+--
+-- COLUMN ORDER matches the ORDER BY exactly, DESC included, because the keyset
+-- cursor compares the pair — `(occurred_at, id) < ($1, $2)` — so a scan can
+-- start at the cursor and walk forward without a sort. id is not decoration
+-- here: two detectors reporting the same broken object in the same second is
+-- normal (migration 000036's own measured case), and a keyset over a
+-- non-unique sort key drops or repeats the tied rows.
+--
+-- NO tenant_id IN THE KEY, deliberately. Every read of this table runs under
+-- RLS, so a tenant_id predicate is always present — but this deployment is
+-- single-organisation by confirmed scope, so that column has one value and
+-- leading with it would widen every entry to buy no selectivity. Revisit
+-- together, not separately, if that scope ever changes.
+--
+-- Partitioned parent: Postgres creates the matching index on every existing
+-- partition and on each one created later. Not CONCURRENTLY, for the same
+-- reason 000039 states — golang-migrate runs each migration in a transaction
+-- and CREATE INDEX CONCURRENTLY cannot run inside one. A fleet with a very
+-- large findings table should build it by hand concurrently first and let
+-- this apply as a no-op, which is what IF NOT EXISTS is here for.
+CREATE INDEX IF NOT EXISTS findings_occurred_at_idx
+    ON findings (occurred_at DESC, id DESC);

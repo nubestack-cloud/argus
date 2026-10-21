@@ -1,0 +1,34 @@
+-- PROJECT.md B153 addendum: the reference-direction impact signal.
+--
+-- The earned-promotion mechanism's original impact criterion (migration-free,
+-- earned_promotion.go) only asked "does the SAME object also have a
+-- Fault-classed finding" — but a broken Gateway API Gateway/GatewayClass
+-- (Accepted=False, Programmed=False; exactly the shape this predicate family
+-- exists to earn promotion for) never carries a SECOND fault on itself. The
+-- impact of a broken Gateway lands on the HTTPRoutes and workloads that
+-- route through it — a DIFFERENT object, related by reference, not identity.
+--
+-- references stores what tunnel.Finding.References already carries agent-
+-- side (internal/agent's checkGenericObjectHealth dispatcher, reusing
+-- checkGenericDanglingReference's own findObjectReferences extraction, B148
+-- — every {kind, namespace, name} pair this Finding's own object names
+-- anywhere in its top-level spec/status fields). Nullable: most findings
+-- reference nothing (a plain CrashLoopBackOff Pod has no outbound
+-- ObjectReference-shaped field at all), and NULL means exactly that, not
+-- "unknown" — the agent always sends what it found, including an empty
+-- array when it looked and found nothing, but a NULL column is cheaper to
+-- both store and index than an empty JSON array for the overwhelming
+-- majority of rows that will never have one.
+--
+-- jsonb, not a normalized join table: this is read exactly once per earned-
+-- promotion check, as a single @> containment query against one anomalous
+-- object's identity — the exact shape jsonb's own GIN-indexable containment
+-- operator answers directly, and a join table would need its own migration,
+-- its own RLS policy, and a JOIN on every read for a value that is written
+-- once and never updated.
+ALTER TABLE findings ADD COLUMN references_out jsonb;
+
+-- Supports "does any finding reference this (kind, namespace, name)" —
+-- earned_promotion.go's own query shape. GIN, not a b-tree: jsonb
+-- containment (@>) is what that query actually uses.
+CREATE INDEX findings_references_out_idx ON findings USING gin (references_out);

@@ -1,0 +1,8 @@
+# The release gate's disposable cluster: one control plane and two workers,
+# so the smoke test's multi-node scheduling checks have somewhere to land.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker

@@ -1,0 +1,33 @@
+-- Add StructuredPatch to the action_type CHECK constraint.
+--
+-- BACKLOG.md F11's offline-testable safety-machinery slice: a RemediationPlan
+-- that carries a LIST of {path, value} operations against one target object,
+-- each path validated through the exact same internal/remediation.
+-- PatchFieldPermitted allowlist PatchField already uses. This is the widening
+-- migrations 000040 and 000056 already forgot once each for a NEW Go enum
+-- value (PatchResourceLimits/RevertContainerImage, then PatchField) — guarded
+-- against a third silent omission by
+-- TestActionTypeCheckConstraintAcceptsEveryActionType
+-- (internal/orchestrator/actiontype_constraint_db_test.go), which drives the
+-- real constraint from remediation.AllActionTypes() rather than a
+-- hand-copied list, so this migration existing is what makes that test pass
+-- rather than fail loudly.
+--
+-- Nothing in the running system produces a StructuredPatch recommendation row
+-- outside a test, and that is deliberate, not an oversight to fix later:
+-- neither backend's system prompt (internal/llm/toolloop.go's SystemPrompt,
+-- internal/llm/cli_investigator.go) describes this action type, and
+-- toolloop.go's parseProposedPlan has no case for it either — so even a model
+-- that somehow wrote the literal string "StructuredPatch" as actionType would
+-- decode to a plan with nil Params, which remediation.RemediationPlan.
+-- Validate() (and therefore remediation.Evaluate) rejects as Blocked/
+-- InvalidPlan before persistRecommendation is ever called (see gate.go's
+-- Decision.InvalidPlan and orchestrator.go's advanceForPlan, both fixed for
+-- exactly this class of bug per BUGS.md 86). This migration widens the column
+-- anyway, now, because the safety machinery around this action type
+-- (validation, dry-run, diff, rollback capture) is being built and tested
+-- against a real Postgres, including a constructed row inserted directly the
+-- way tests do — and that requires the column to accept the value at all.
+ALTER TABLE remediation_recommendations DROP CONSTRAINT remediation_recommendations_action_type_check;
+ALTER TABLE remediation_recommendations ADD CONSTRAINT remediation_recommendations_action_type_check
+  CHECK (action_type IN ('ScaleDeployment', 'RestartPod', 'PatchResourceLimits', 'RevertContainerImage', 'PatchField', 'OpenPR', 'StructuredPatch'));

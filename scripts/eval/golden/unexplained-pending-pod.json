@@ -1,0 +1,49 @@
+{
+  "id": "unexplained-pending-pod",
+  "description": "Genuinely insufficient evidence: every probe comes back empty. The correct answer is an honest 'could not determine' at low confidence, never a confident guess. This case exists specifically to catch a model that fabricates confidence when it shouldn't (lld/07-analysis-contracts.md §4's 'numerology' warning).",
+  "finding": {
+    "detectorId": "pod-status",
+    "severity": "medium",
+    "namespace": "staging",
+    "objectName": "worker-job-9c8d7f6-zz001",
+    "reason": "PendingTimeout",
+    "message": "Pod worker-job-9c8d7f6-zz001 has been Pending for over 10 minutes",
+    "occurrenceCount": 1
+  },
+  "toolResponses": {
+    "get_events": [
+      { "match": {}, "data": [] }
+    ],
+    "describe_resource": [
+      {
+        "match": {},
+        "data": {
+          "object": {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": { "name": "worker-job-9c8d7f6-zz001", "namespace": "staging" },
+            "status": { "phase": "Pending" }
+          },
+          "events": []
+        }
+      }
+    ],
+    "get_logs": [
+      { "match": {}, "data": { "lines": [] } }
+    ],
+    "get_owner_chain": [
+      { "match": {}, "data": [] }
+    ],
+    "get_gitops_ownership": [
+      { "match": {}, "data": { "managed_by": "none" } }
+    ]
+  },
+  "expected": {
+    "type": "insufficient",
+    "requiredKeywords": [],
+    "forbiddenKeywords": [],
+    "maxConfidenceForInsufficient": 0.4,
+    "minIterations": 3,
+    "maxIterations": 5
+  }
+}

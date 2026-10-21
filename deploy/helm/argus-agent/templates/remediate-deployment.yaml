@@ -1,0 +1,208 @@
+{{- if not (include "argus-agent.skip" .) }}
+{{- if .Values.remediate.enabled }}
+# PROJECT.md E11 — the SECOND agent process, and the whole point of this item.
+#
+# WHAT WAS WRONG. This chart used to run one agent Pod bound to the UNION of
+# the argus-investigate and argus-remediate ClusterRoles (a second
+# ClusterRoleBinding named argus-remediate-investigate, now deleted). Writes
+# were opt-in and that half worked; what did not was the binding when they
+# were ON. The model's read-only investigation loop ran under an identity
+# that could patch Deployments and delete Pods. It was merely never OFFERED a
+# write tool — isolation by hub-side code discipline, not by RBAC. Non-
+# negotiable 1 asks for the investigation path to be structurally incapable
+# of writing, and "we don't tell it to" is not that.
+#
+# WHAT THIS IS. The argus-remediate identity, in its own Pod, holding its own
+# ServiceAccount token and nothing else — no argus-investigate grant, no
+# read of anything beyond what argus-remediate's own write pack includes. It
+# opens its own tunnel connection to the hub and declares itself the
+# remediation connection (ARGUS_AGENT_ROLE below), which is how the hub's
+# (clusterID, role)-keyed connection registry can hold both at once and route
+# each tool call to the peer that is meant to serve it.
+#
+# The investigation Pod (templates/deployment.yaml) now runs as
+# argus-investigate ALWAYS — read-only, whether or not this file renders. Its
+# ServiceAccount holds no create/update/patch/delete verb on anything, so a
+# fully compromised investigation path cannot write to this cluster: the API
+# server refuses it, with no ARGUS code in the loop.
+#
+# IT NEVER ENROLLS. One physical cluster stays one ARGUS cluster record. This
+# Pod mounts the SAME identity Secret the investigation agent enrolled and
+# wrote (templates/identity-secret.yaml), presents the same hub-issued client
+# certificate, and so resolves to the same cluster id hub-side. On a fresh
+# install it simply waits — logging what it is waiting for — until the
+# investigation agent has enrolled and an operator has accepted the cluster.
+# See internal/agent/client.go's awaitSharedIdentity.
+#
+# IT RUNS NO DETECTORS. No warning-event watch, no pod-conditions watch, no
+# sweep, no declarative rules, no facts. Two agents detecting the same
+# cluster would open two incidents for every fault. Detection belongs to the
+# identity that holds the read grant for it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argus-agent-remediate
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+    argus.io/agent-role: remediate
+spec:
+  # Exactly one, for the same reason the investigation Deployment is one: a
+  # second replica would open a second connection under the same
+  # (clusterID, role) key, and the registry keeps the newest — silently
+  # displacing the first mid-execution.
+  replicas: 1
+  # Recreate, matching templates/deployment.yaml and for the same reason: a
+  # surging second Pod holding the same identity would open a second
+  # remediation connection for one cluster and displace the running one.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "argus-agent.remediateSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "argus-agent.remediateSelectorLabels" . | nindent 8 }}
+        argus.io/agent-role: remediate
+    spec:
+      # The write identity, and ONLY the write identity. No argus-investigate
+      # ClusterRoleBinding touches this ServiceAccount — that binding is what
+      # E11 deleted.
+      serviceAccountName: {{ .Values.remediate.serviceAccount.name }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        # Same explicit numeric UID/GID as the investigation Deployment — see
+        # its own comment for the real containerd/RKE2 failure that made a
+        # symbolic image user insufficient.
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent
+          image: {{ include "argus-agent.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: ARGUS_HUB_API_URL
+              value: {{ include "argus-agent.hubApiUrl" . | quote }}
+            {{- with include "argus-agent.tunnelEndpoint" . }}
+            - name: ARGUS_TUNNEL_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with include "argus-agent.hubCAEnv" . }}{{ . | nindent 12 }}{{- end }}
+            # PROJECT.md E11. Declares this connection's role to the hub, on
+            # its first message. It grants nothing — what this process can do
+            # to the cluster is decided entirely by the ServiceAccount above
+            # and this cluster's RBAC. It tells the hub which of this
+            # cluster's two connections this one is, so a read-only tool is
+            # never sent here and a write action is never sent anywhere else.
+            - name: ARGUS_AGENT_ROLE
+              value: remediate
+            # PROJECT.md AD10: the image this pod runs, reported in the agent's
+            # facts so the hub can say when it is behind, and whether this
+            # chart lets the hub upgrade it.
+            - name: ARGUS_AGENT_IMAGE
+              value: {{ include "argus-agent.image" . | quote }}
+            - name: ARGUS_SELF_UPGRADE
+              value: {{ .Values.selfUpgrade.enabled | quote }}
+            # Where this identity reports its write authority per namespace.
+            # The answer itself is still asked of the API server; this only
+            # says where to ask, since this identity may not list Roles.
+            {{- if and (not .Values.remediate.allNamespaces) .Values.remediate.namespaces }}
+            - name: ARGUS_REMEDIATE_NAMESPACES
+              value: {{ join "," .Values.remediate.namespaces | quote }}
+            {{- end }}
+            {{- if .Values.selfUpgrade.enabled }}
+            # The one repository an upgrade may come from, and the namespace
+            # whose two agent Deployments it may change (upgrade_agent).
+            - name: ARGUS_SELF_UPGRADE_REPOSITORY
+              value: {{ .Values.image.repository | quote }}
+            - name: ARGUS_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- end }}
+            # NO ARGUS_ENROLLMENT_TOKEN, deliberately. This agent adopts the
+            # identity the investigation agent enrolled; spending a token
+            # here would create a second cluster record for one cluster.
+            {{- if eq .Values.identity.mode "secret" }}
+            - name: ARGUS_AGENT_IDENTITY_SECRET
+              value: {{ .Values.identity.secretName | quote }}
+            - name: ARGUS_AGENT_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- end }}
+            - name: ARGUS_AGENT_DATA_DIR
+              value: {{ .Values.dataDir | quote }}
+            {{- if .Values.policyController.enabled }}
+            # BACKLOG.md F14's per-execution admission-policy scoping. Mounted
+            # HERE rather than on the investigation Pod since E11: the two
+            # tools that use it (open_execution_window / close_execution_window)
+            # bracket an execution, and the hub routes them to the remediation
+            # connection. The investigation agent has no use for this
+            # credential and is no longer given it.
+            - name: ARGUS_POLICY_CONTROLLER_TOKEN_DIR
+              value: {{ .Values.policyController.tokenMountPath | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: agent-data
+              mountPath: {{ .Values.dataDir }}
+            {{- with include "argus-agent.hubCAVolumeMount" . }}{{ . | nindent 12 }}{{- end }}
+            {{- if .Values.policyController.enabled }}
+            - name: policy-controller-token
+              mountPath: {{ .Values.policyController.tokenMountPath }}
+              readOnly: true
+            {{- end }}
+          resources:
+            # Deliberately NOT values.yaml's `resources`. Those numbers are
+            # sized against a MEASURED objects-to-memory table for a SWEEP
+            # (see values.yaml's resources comment), and this process never
+            # sweeps — it runs no detectors at all. Its peak is one signed
+            # plan's worth of reads plus one Patch. Sizing it like a sweeping
+            # agent would reserve a gigabyte per cluster for a process that
+            # uses tens of megabytes, which across a 200-cluster fleet is a
+            # real cost for nothing.
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+      volumes:
+        # Scratch only. This agent's identity lives in the shared Secret
+        # above (identity.mode: secret, the default); this directory is what
+        # makes readOnlyRootFilesystem workable and holds nothing that
+        # matters across a restart.
+        - name: agent-data
+          emptyDir: {}
+        {{- with include "argus-agent.hubCAVolume" . }}{{ . | nindent 8 }}{{- end }}
+      {{- if .Values.policyController.enabled }}
+        - name: policy-controller-token
+          secret:
+            secretName: {{ .Values.policyController.serviceAccount.name }}-token
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- end }}

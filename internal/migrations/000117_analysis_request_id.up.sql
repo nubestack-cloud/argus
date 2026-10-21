@@ -1,0 +1,41 @@
+-- analyses.request_id — the correlation id of the unit of work that produced
+-- this analysis (PROJECT.md T23).
+--
+-- The gap this closes is the most common support request this product will
+-- receive, and it had no answer: "this investigation behaved oddly." An
+-- analyses row records WHAT the investigation concluded — the causal chain,
+-- the tool calls, the cost — and nothing at all about the run that produced
+-- it. The hub's log has the run; the row has the conclusion; before this
+-- column there was no key joining the two, so reconstructing an
+-- investigation's trail meant grepping free text around a timestamp and
+-- hoping no other investigation overlapped it (on a busy hub, several always
+-- do — internal/autoanalyze schedules fleet-correlated siblings together on
+-- purpose).
+--
+-- ON ANALYSES specifically, rather than on incidents: an incident is
+-- investigated more than once (a manual re-run, a retry after a bounded
+-- failure, a re-investigation after Reopened), and each of those is a
+-- separate run with a separate trail. The id has to be per-run or it answers
+-- the wrong question.
+--
+-- Nullable, and it stays nullable. A row written before this migration has no
+-- correlation id and never will; a fabricated one would be worse than an
+-- absent one, because it would look like a trail that could be followed and
+-- find nothing (argus-context's lesson 9 — a missing value is never rendered
+-- as a zero, or here, as an id). Readers treat NULL as "this analysis
+-- predates request correlation", not as an error.
+--
+-- Two writers set it, from the same source: internal/api.PersistAnalysis reads
+-- it off the context (internal/logging.RequestIDFrom), so the manual route
+-- gets the HTTP request's id — the same one the caller saw in the response
+-- header and in any RFC 9457 problem body — and the automatic route gets the
+-- id internal/autoanalyze minted for that one incident's investigation.
+ALTER TABLE analyses ADD COLUMN request_id text;
+
+-- No index. This column is looked up the other way round — an operator has a
+-- correlation id from a log line or an error body and wants the analysis, or
+-- has the analysis and wants the id to grep logs with. The first direction is
+-- a one-off support query over a table whose access path is otherwise always
+-- incident_id; adding an index to make an interactive query fast would cost
+-- every analysis write forever. Add one if and when fleet-wide
+-- "find the analysis for this request id" becomes a product surface.

@@ -1,0 +1,75 @@
+-- Replica-level correlation — the residual half of BACKLOG.md's A3 that
+-- does NOT need a full ownership/reference graph (the PVC<->Service case,
+-- A3's harder remaining half, still open).
+--
+-- THE PROBLEM, MEASURED (CAPABILITIES.md §5): "One missing ConfigMap (2
+-- replicas)" produced **4 incidents** — FailedMount x2 pods, PendingTimeout
+-- x2 pods — for what is structurally ONE outage. Migration 000036's
+-- object-level correlation deliberately does not fix this: two pods of one
+-- Deployment are two distinct objects (different object_key, different
+-- fingerprint — the fingerprint hashes the POD's own name), so each pod
+-- correctly gets its own incident. That per-pod granularity is often exactly
+-- right (one replica can be individually rescheduled/fixed while its
+-- siblings are not, and each incident's own state should track that) — the
+-- actual gap is that nothing tells an operator "these N incidents are one
+-- underlying problem," so they read as N unrelated problems.
+--
+-- THE FIX, mirroring migration 000005/internal/fleetgroup's already-proven
+-- shape exactly, just re-scoped: fleetgroup.Recompute groups incidents
+-- sharing a FINGERPRINT across DISTINCT CLUSTERS into a fleet_group_id, for
+-- display only — it never merges incident state. internal/replicagroup
+-- (new package) does the identical thing, scoped to ONE cluster, keyed on
+-- (workload_key, opening_reason) instead of fingerprint-across-clusters:
+-- when 2+ currently-open incidents on the SAME cluster share the SAME
+-- owning workload AND the SAME opening reason, they're assigned a shared
+-- workload_group_id. Same non-merging guarantee: each incident keeps its
+-- own state, findings, and lifecycle; the group is purely "these are the
+-- same underlying fault, on siblings."
+--
+-- THREE NEW COLUMNS, all nullable (most incidents are not Pod-shaped, or the
+-- agent could not resolve an owning workload — see internal/agent/
+-- workload.go):
+--
+--   workload_key      "<ownerGVK>|<namespace>|<ownerName>" of the Pod's
+--                      owning Deployment/StatefulSet/DaemonSet/ReplicaSet/
+--                      Job — resolved AGENT-side (it already has the Pod
+--                      object's OwnerReferences in hand at detection time;
+--                      resolving to the Deployment past an intermediate
+--                      ReplicaSet costs at most one extra GET), computed
+--                      into this HUB-side column by
+--                      internal/gateway/finding.go's workloadCorrelationKey,
+--                      the same object_key-parallel split migration 000036
+--                      already established (agent supplies raw identity,
+--                      hub computes the joined display key).
+--   opening_reason     The raw f.Reason of the finding that opened this
+--                      incident (e.g. "OOMKilled", "FailedMount") — plain
+--                      text, deliberately NOT folded into a hash the way
+--                      fingerprint is: grouping needs to compare it
+--                      directly (workload_key + opening_reason equality),
+--                      and a plain column serves that with no hash function
+--                      duplicated hub-side, while also being independently
+--                      useful for display ("opened by: OOMKilled") without
+--                      decoding anything.
+--   workload_group_id  Set/cleared/merged by internal/replicagroup.Recompute
+--                      exactly like fleet_group_id — never written anywhere
+--                      else.
+--
+-- Both workload_key and opening_reason are set ONCE, at incident creation
+-- (mirroring fingerprint/object_key's own "identifies the finding that
+-- opened this incident, not updated afterward" semantics) — a later,
+-- different-reason finding on the same object still updates this incident
+-- (object-level correlation, unchanged), but does not retroactively change
+-- what workload-group it was ever eligible to join.
+ALTER TABLE incidents ADD COLUMN workload_key text;
+ALTER TABLE incidents ADD COLUMN opening_reason text;
+ALTER TABLE incidents ADD COLUMN workload_group_id text;
+
+-- Same shape as migration 000005's incidents_fleet_group_idx: only
+-- meaningful for the (typically small) set of currently-grouped incidents,
+-- so a partial index costs little and serves both the read (GET
+-- /incidents?workloadGroupId=) and Recompute's own UPDATE.
+CREATE INDEX incidents_workload_group_idx ON incidents (workload_group_id) WHERE workload_group_id IS NOT NULL;
+
+-- Recompute's read query filters on (cluster_id, workload_key,
+-- opening_reason, state) together — this is that query's index.
+CREATE INDEX incidents_workload_key_idx ON incidents (cluster_id, workload_key, opening_reason) WHERE workload_key IS NOT NULL;

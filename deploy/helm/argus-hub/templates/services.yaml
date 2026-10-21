@@ -1,0 +1,71 @@
+{{- $fullname := include "argus-hub.fullname" . }}
+{{- /*
+PROJECT.md T11: merge api.service.annotations with the classic
+prometheus.io/* scrape hints when metricsScrapeAnnotations is true (default),
+computed here rather than hardcoded in values.yaml so the port always
+matches api.service.port even if a deployment overrides it. User-supplied
+annotations win on any key collision — mergeOverwrite's later argument takes
+precedence, and .Values.api.service.annotations is passed last.
+*/}}
+{{- $apiAnnotations := dict }}
+{{- if .Values.api.service.metricsScrapeAnnotations }}
+{{- $apiAnnotations = dict "prometheus.io/scrape" "true" "prometheus.io/port" (toString .Values.api.service.port) "prometheus.io/path" "/metrics" }}
+{{- end }}
+{{- $apiAnnotations = mergeOverwrite $apiAnnotations .Values.api.service.annotations }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}
+  labels: {{- include "argus-hub.labels" . | nindent 4 }}
+  {{- with $apiAnnotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.api.service.type }}
+  ports:
+    - name: api
+      port: {{ .Values.api.service.port }}
+      targetPort: api
+      {{- if and (eq .Values.api.service.type "NodePort") .Values.api.service.nodePort }}
+      nodePort: {{ .Values.api.service.nodePort }}
+      {{- end }}
+    {{- if include "argus-hub.cliRunnerEnabled" . }}
+    # The MCP listener rides this Service so the runner can reach it in-cluster.
+    # It is deliberately NOT on the public API port (lld/12 §12.6): nothing on
+    # it is reachable with a user session, and nothing on the API port can reach
+    # these tools. If you expose this Service publicly, expose port
+    # {{ .Values.api.service.port }} only.
+    - name: mcp
+      port: 9090
+      targetPort: mcp
+    {{- end }}
+  selector:
+    {{- include "argus-hub.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: hub
+---
+# The tunnel gets its own Service because it has a different reachability
+# requirement from everything else: agents in OTHER clusters must reach it. The
+# API only needs to be reachable by operators.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-tunnel
+  labels: {{- include "argus-hub.labels" . | nindent 4 }}
+  {{- with .Values.tunnel.service.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.tunnel.service.type }}
+  {{- if and (eq .Values.tunnel.service.type "LoadBalancer") .Values.tunnel.service.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.tunnel.service.loadBalancerIP | quote }}
+  {{- end }}
+  ports:
+    - name: tunnel
+      port: {{ .Values.tunnel.service.port }}
+      targetPort: tunnel
+      {{- if and (eq .Values.tunnel.service.type "NodePort") .Values.tunnel.service.nodePort }}
+      nodePort: {{ .Values.tunnel.service.nodePort }}
+      {{- end }}
+  selector:
+    {{- include "argus-hub.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: hub

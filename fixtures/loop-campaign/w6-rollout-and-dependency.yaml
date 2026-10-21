@@ -1,0 +1,67 @@
+# Loop campaign, wave 6 — PROJECT.md IN2 and IN3 (README.md).
+#
+#  IN2a in2-slow-start: nginx behind a readiness probe, started 45 s late. Its rollout
+#       produces Unhealthy events while new pods start. Expected: findings, NO incident.
+#  IN2b in2-never-ready: a readiness probe nothing serves, progressDeadlineSeconds 60.
+#       Expected: no incident while the rollout is in progress, then an incident once the
+#       Deployment reports ProgressDeadlineExceeded.
+#  IN3  in3-data + in3-uses-pvc: a PVC naming a StorageClass that does not exist and the
+#       Deployment mounting it. Expected: ONE incident holding both the PVC's and the pod's
+#       findings (S06 opened two).
+apiVersion: v1
+kind: Namespace
+metadata: {name: argus-loop-in, labels: {argus.io/purpose: loop-campaign}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: in2-slow-start, namespace: argus-loop-in}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: in2-slow-start}}
+  template:
+    metadata: {labels: {app: in2-slow-start}}
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.27-alpine
+          command: ["sh", "-c", "sleep 45; exec nginx -g 'daemon off;'"]
+          readinessProbe: {httpGet: {path: /, port: 80}, periodSeconds: 3, failureThreshold: 1}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: in2-never-ready, namespace: argus-loop-in}
+spec:
+  replicas: 1
+  progressDeadlineSeconds: 60
+  selector: {matchLabels: {app: in2-never-ready}}
+  template:
+    metadata: {labels: {app: in2-never-ready}}
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.27-alpine
+          readinessProbe: {httpGet: {path: /not-served, port: 80}, periodSeconds: 3, failureThreshold: 1}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: in3-data, namespace: argus-loop-in}
+spec:
+  storageClassName: argus-loop-missing-class
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 1Gi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: in3-uses-pvc, namespace: argus-loop-in}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: in3-uses-pvc}}
+  template:
+    metadata: {labels: {app: in3-uses-pvc}}
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+          volumeMounts: [{name: data, mountPath: /data}]
+      volumes: [{name: data, persistentVolumeClaim: {claimName: in3-data}}]

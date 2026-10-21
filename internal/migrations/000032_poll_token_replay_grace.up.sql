@@ -1,0 +1,15 @@
+-- handleEnrollStatus's "issued" branch has always been replayable forever:
+-- once issued_cert_pem is set, every future poll of the same pollToken
+-- returns it again, with no expiry. That was harmless when the payload was
+-- just a cert+CA (the agent's own leaf cert is no more sensitive once
+-- issued than it already is on the agent's disk), but this cluster's
+-- remediation-execution work adds a per-cluster plan-signing key to that
+-- same idempotent response — a standing way to re-fetch fleet-sensitive
+-- material is no longer an acceptable shape regardless of the original
+-- payload. cert_issued_at, set once alongside issued_cert_pem, lets
+-- handleEnrollStatus close the window to a grace period generous enough for
+-- a legitimate agent to finish persisting its cert to disk and never poll
+-- again, rather than requiring a true single-use marker that would strand a
+-- legitimate agent that crashed after receiving the response but before
+-- writing it to disk.
+ALTER TABLE clusters ADD COLUMN cert_issued_at timestamptz;

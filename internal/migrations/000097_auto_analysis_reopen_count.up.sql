@@ -1,0 +1,29 @@
+-- PROJECT.md B144: an incident's own auto_analysis_attempted_at is a
+-- one-shot gate (migration 000020) — set once, and never reset by anything,
+-- including internal/gateway/finding.go's event-driven Reopened transition
+-- or internal/orchestrator/validation.go's sweep-driven one. So a Reopened
+-- incident stayed permanently "already attempted" even after the object was
+-- genuinely healthy again, even with auto-analysis enabled for its severity,
+-- even under unattended execution — the one case where automatic
+-- re-diagnosis matters most was the one case structurally guaranteed to
+-- need a human. Confirmed live 2026-09-06 (E14 row 18,
+-- e14row18-unattended-b1265e): a real, correctly-executed ScaleDeployment
+-- fix held, the incident briefly reached Reopened from stale pre-fix
+-- crash-loop events, and never moved off it on its own even 20+ minutes
+-- after every findings-generating condition was genuinely gone.
+--
+-- autoanalyze.candidateQuery's own state list does not exclude Reopened
+-- (`NOT IN ('Resolved','Dismissed','Investigating','Executing',
+-- 'AwaitingMerge','PlanRejected')`) — the design already intends a Reopened
+-- incident to be an ordinary candidate again. The fix
+-- (internal/orchestrator/db.go's SetState, the one function that ever
+-- writes incidents.state) resets auto_analysis_attempted_at to NULL on a
+-- Reopened transition, making that intent real — but only up to
+-- maxAutoAnalysisReopens (3) times per incident, tracked by this new
+-- column, so a genuinely flip-flopping incident still reaches a human
+-- rather than looping automatic analysis (and, if auto-approved, automatic
+-- execution) forever. Deliberately a SEPARATE counter from
+-- auto_analysis_attempts (migration 000094): that one bounds retries of a
+-- FAILED investigation call within a single analysis cycle, a different
+-- failure mode this column does not touch.
+ALTER TABLE incidents ADD COLUMN auto_analysis_reopen_count integer NOT NULL DEFAULT 0;

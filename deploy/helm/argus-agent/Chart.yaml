@@ -1,0 +1,30 @@
+apiVersion: v2
+name: argus-agent
+description: >-
+  The ARGUS agent: connects one Kubernetes cluster to an ARGUS hub. Detects
+  problems and answers read-only investigation requests; optionally applies
+  approved fixes under a separate, opt-in identity.
+type: application
+version: 0.2.0
+appVersion: "0.2.0"
+kubeVersion: ">=1.29.0-0"
+home: https://argus.nubestack.com/
+sources:
+  - https://github.com/nubestack-collab/ARGUS
+icon: https://argus.nubestack.com/images/argus-logo.svg
+keywords: [kubernetes, incident-management, aiops, gitops, remediation, sre]
+maintainers:
+  - name: ARGUS maintainers
+annotations:
+  artifacthub.io/license: AGPL-3.0-only
+  artifacthub.io/category: monitoring-logging
+  artifacthub.io/prerelease: "false"
+  artifacthub.io/containsSecurityUpdates: "false"
+  artifacthub.io/links: |
+    - name: Documentation
+      url: https://argus.nubestack.com/
+    - name: Source
+      url: https://github.com/nubestack-collab/ARGUS
+  artifacthub.io/images: |
+    - name: argus-agent
+      image: nubestack/argus-agent

@@ -1,0 +1,19 @@
+-- First slice of DESIGN.md §13 (alerting and notifications):
+-- a new column, not a new table, is all this increment needs. notified_at
+-- IS NULL means "a webhook notification for this incident hasn't been sent
+-- yet" -- internal/notify.WebhookNotifier polls exactly that predicate, so
+-- this column is the only coordination mechanism the poller needs; nothing
+-- else writes to it.
+--
+-- Deliberately nullable with no default other than NULL: every existing row
+-- (and every newly INSERTed incident, since internal/gateway/finding.go's
+-- handleFinding is untouched by this migration) starts unnotified, which is
+-- exactly the backfill behavior wanted -- a hub upgraded onto this migration
+-- with pre-existing incidents will notify on all of them once, on the next
+-- sweep, rather than silently skipping them.
+--
+-- No new RLS policy needed: this is a plain column on an existing table
+-- (incidents) whose RLS policies (migration 000009's generic cluster_id-
+-- scoped policy, plus 000013's tenant_id-keyed additive policy) already
+-- cover every row regardless of column set.
+ALTER TABLE incidents ADD COLUMN notified_at timestamptz;

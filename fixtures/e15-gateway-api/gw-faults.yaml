@@ -1,0 +1,26 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: gw-faults
+  namespace: gwapi-verify
+spec:
+  gatewayClassName: nginx
+  listeners:
+    - name: plain                      # conflicts with 'secure' on port+hostname
+      protocol: HTTP
+      port: 80
+      hostname: conflict.example.com
+    - name: secure                     # same port+hostname, different protocol
+      protocol: HTTPS
+      port: 80
+      hostname: conflict.example.com
+      tls:
+        mode: Terminate
+        certificateRefs: [{kind: Secret, name: conflict-cert}]
+    - name: badcert                    # GW-006: cert secret does not exist
+      protocol: HTTPS
+      port: 443
+      hostname: missing-cert.example.com
+      tls:
+        mode: Terminate
+        certificateRefs: [{kind: Secret, name: this-secret-does-not-exist}]

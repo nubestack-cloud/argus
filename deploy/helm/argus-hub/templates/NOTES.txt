@@ -1,0 +1,109 @@
+ARGUS hub {{ .Chart.AppVersion }} installed as {{ .Release.Name }}.
+
+{{- $fullname := include "argus-hub.fullname" . }}
+
+1. SIGN IN
+{{ if or (include "argus-hub.ingressEnabled" .) .Values.httpRoute.host }}
+   {{ include "argus-hub.publicApiUrl" . }}
+{{- else }}
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ $fullname }} 8080:{{ .Values.api.service.port }}
+   then open http://localhost:8080
+{{- end }}
+
+   Username: admin@localhost
+{{ if .Values.bootstrap.existingSecret }}
+   Password: from your Secret {{ .Values.bootstrap.existingSecret }}, key {{ .Values.bootstrap.passwordKey }}
+{{- else }}
+   Password: kubectl -n {{ .Release.Namespace }} get secret {{ $fullname }}-bootstrap \
+               -o jsonpath='{.data.password}' | base64 -d ; echo
+
+   You choose a new password at first sign-in.
+{{- end }}
+
+2. HOW AGENTS CONNECT
+{{ if .Values.tunnel.publicEndpoint }}
+   Agents enroll at {{ include "argus-hub.publicApiUrl" . }} and then tunnel to the dedicated
+   address {{ .Values.tunnel.publicEndpoint }}, which must be reachable from every watched cluster.
+{{- else if include "argus-hub.ingressEnabled" . }}
+   Agents enroll and tunnel at {{ include "argus-hub.publicApiUrl" . }}, through the same
+   Ingress as the UI. Every watched cluster must be able to reach that URL.
+{{- else if .Values.httpRoute.host }}
+   Agents enroll and tunnel at {{ include "argus-hub.publicApiUrl" . }}, through the same
+   Gateway as the UI. Every watched cluster must be able to reach that URL.
+{{- else }}
+   There is no ingress host, so agents reach the hub at its in-cluster Service:
+   only an agent in THIS cluster can connect. Set ingress.host (or httpRoute.host
+   with Gateway API) to watch others.
+{{- end }}
+
+3. CLUSTERS
+{{ if include "argus-hub.localAgent" . }}
+   This cluster's agent is installed with the hub and enrolls itself as
+   "{{ .Values.localAgent.displayName }}" within a minute: no token, no approval.
+{{- else if .Values.localAgent.enabled }}
+   This cluster's agent was NOT installed with the hub:
+   {{- if ne .Release.Namespace "argus-system" }} the hub is not in argus-system.
+   {{- else }} the cluster already runs one (release argus-agent).{{ end }}
+{{- end }}
+
+   Other clusters: Clusters -> Enroll a cluster prints the agent's helm install
+   with this hub's address and a token filled in. For many clusters, issue one
+   fleet token (Clusters -> Fleet tokens) and roll the agent chart out with your
+   GitOps tool. The hub never receives a kubeconfig.
+
+4. CONFIGURE AN AI PROVIDER
+
+   Nothing analyses anything until you do, in Settings -> AI providers.
+{{- if include "argus-hub.cliRunnerEnabled" . }}
+   The CLI runner is deployed and the hub's MCP listener is wired, so a provider
+   of kind "cli" pointing at:
+
+     http://{{ $fullname }}-cli-runner:8090
+
+   will work. Confirm with:
+     kubectl -n {{ .Release.Namespace }} logs deploy/{{ $fullname }} | grep "CLI investigator"
+{{- else }}
+   For an API provider, that is all you need.
+
+   For a CLI runner, upgrade with a model credential (for example
+   --set-file cliRunner.modelCredential.claudeCodeOauthToken=<file>): the
+   runner is deployed whenever one is supplied (cliRunner.enabled=auto), and it
+   also sets the hub's MCP listener, which the CLI backend needs — configuring a
+   "cli" provider without it fails at analyze time.
+{{- end }}
+
+5. SCRAPE /metrics — it requires a bearer token, and serves nothing without one
+{{ if .Values.api.metricsTokenExistingSecret }}
+   The hub reads its token from your Secret {{ .Values.api.metricsTokenExistingSecret }}, key {{ .Values.api.metricsTokenKey }}.
+{{- else if .Values.api.metricsToken }}
+   The hub uses the api.metricsToken you supplied. Put that same value in your
+   Prometheus scrape_config.
+{{- else }}
+   No token was supplied, so one was GENERATED for you and is preserved across
+   upgrades. Read it out and put it in your Prometheus scrape_config:
+
+     kubectl -n {{ .Release.Namespace }} get secret {{ $fullname }}-metrics \
+               -o jsonpath='{.data.token}' | base64 -d ; echo
+{{- end }}
+
+     scrape_configs:
+       - job_name: argus-hub
+         authorization:
+           credentials: "<that token>"
+
+   Without it every scrape gets 401; with no token on the hub at all, 503. The
+   hub says which state it is in, once, in its own startup log.
+
+6. WHAT IS NOT SET UP FOR YOU
+{{ if eq .Values.postgres.mode "bundled" }}
+   - No scheduled backups. Before every helm upgrade the database is dumped
+     onto its own volume, so a bad upgrade can be rolled back
+     (docs/INSTALL.md, "Rolling back an upgrade"). For data you must not lose,
+     use postgres.mode=external with your database's own backups.
+{{- end }}
+   - No cost ceiling and no model pricing: spend is unbounded until you set them.
+   - Storm protection is off: one cluster can open unlimited new incidents.
+   - Remediation is off in every agent until you install it with
+     remediate.enabled=true, per cluster.
+
+Install guide: docs/INSTALL.md. User guide: https://argus.nubestack.com/

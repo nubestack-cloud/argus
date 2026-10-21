@@ -1,0 +1,68 @@
+-- PROJECT.md B175: the one-time catch-up for queued notifications whose
+-- incident no longer exists. internal/notify's sweep now refuses to claim one
+-- (claimTransitions' EXISTS guard) and deletes them as it goes
+-- (reapOrphanedTransitions), so this file is not the mechanism — it is the
+-- backlog those two were too late for, cleared in one statement instead of
+-- 500 rows per 30-second tick for the first twenty minutes after the hub
+-- restarts.
+--
+-- Measured on this repository's development database before writing it, as a
+-- read-only census (role `postgres`, because `argus_app` returns zero rows
+-- under RLS with no tenant set and would have made the debris look absent):
+--
+--   incident_notifications total ............................. 1233
+--   ... orphaned (no incidents row with that id) ............. 1223
+--   ... orphaned AND still pending = true ...................... 39
+--   ... orphaned and belonging to a live (non-archived) cluster . 0
+--   rows that survive this DELETE ............................... 10
+--
+-- Three further signals were checked against the same 1,223 rows, and all
+-- three agree that nothing real is in the set: none has a timeline_events row
+-- for its incident, none has an analyses row for its incident, and none
+-- belongs to any of the five clusters that are not archived. The 39 pending
+-- ones were all claimed in a single burst at 2026-09-19 19:47:53Z and left
+-- leased, which is what "the sweeper is retrying deliveries for incidents that
+-- no longer exist" looks like in the table.
+--
+-- # Why this is a DELETE and not an ON DELETE CASCADE
+--
+-- Because no foreign key can exist here, and the nearest one that can would
+-- break something else. Confirmed against a real Postgres 16 rather than
+-- reasoned about:
+--
+--   * incidents is PARTITION BY RANGE (first_seen) with PRIMARY KEY
+--     (id, first_seen) (migration 000005). A unique constraint on a
+--     partitioned table must contain the partition key, so
+--     `REFERENCES incidents(id)` fails with "there is no unique constraint
+--     matching given keys for referenced table". Migration 000083 already
+--     said so; this is the measurement behind it.
+--   * A composite foreign key on (incident_id, first_seen) IS declarable and
+--     its cascade does fire on a row-level DELETE — but the way incidents are
+--     actually destroyed in production is internal/partition's retention job,
+--     which is DROP TABLE on a whole dated partition. A partition a foreign
+--     key references cannot be dropped ("cannot drop table incidents_y2026m09
+--     because other objects depend on it"), so the cascade would never fire;
+--     it would just turn silent debris into a daily maintenance job that
+--     fails.
+--
+-- Orphans are therefore a property of this schema, and the queue has to
+-- tolerate them rather than forbid them.
+--
+-- # Scope
+--
+-- Only this table. The same census found 1,120 orphaned
+-- remediation_recommendations and 57 orphaned incident_tolerations, and
+-- neither belongs in this migration: remediation_recommendations carries four
+-- foreign-key dependents (approval decisions, executions, execution attempts,
+-- and its own sibling self-reference), and an incident_toleration is live
+-- suppression keyed on object_key whose incident_id is nullable provenance —
+-- deleting one changes what the product suppresses. Both need their own
+-- decision, not a ride on this one. audit_events is untouched for the reason
+-- internal/dbtest/residue.go exempts it: it is a hash chain, and deleting from
+-- its middle breaks `argusctl audit verify`.
+--
+-- Runs as the migration superuser, so RLS is bypassed and this sees every
+-- tenant's rows — which is what a one-time catch-up wants.
+
+DELETE FROM incident_notifications n
+ WHERE NOT EXISTS (SELECT 1 FROM incidents i WHERE i.id = n.incident_id);

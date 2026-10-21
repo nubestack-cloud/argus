@@ -1,0 +1,33 @@
+{{- if .Values.httpRoute.host }}
+{{- if .Values.ingress.host }}
+{{- fail "Set ingress.host or httpRoute.host, not both: the hub is reached at one address, and agents are told which." }}
+{{- end }}
+{{- if not .Values.httpRoute.parentRefs }}
+{{- fail "httpRoute.host needs httpRoute.parentRefs: the Gateway to attach to, e.g. --set 'httpRoute.parentRefs[0].name=public' --set 'httpRoute.parentRefs[0].namespace=gateway-system'." }}
+{{- end }}
+{{- $fullname := include "argus-hub.fullname" . }}
+# Gateway API, instead of the Ingress: the UI, the API and the agent tunnel
+# (a WebSocket at /api/v1/agent/tunnel, with its mTLS inside) are routed to
+# the hub's API Service through a Gateway you run. The Gateway's listener
+# holds the certificate for httpRoute.host.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $fullname }}
+  labels: {{- include "argus-hub.labels" . | nindent 4 }}
+  {{- with .Values.httpRoute.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  parentRefs: {{- toYaml .Values.httpRoute.parentRefs | nindent 4 }}
+  hostnames:
+    - {{ .Values.httpRoute.host | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ $fullname }}
+          port: {{ .Values.api.service.port }}
+{{- end }}

@@ -1,0 +1,16 @@
+-- Drops the incident_feedback table (migration 000053).
+--
+-- The feature it backed — the "Was this right?" card, POST /incidents/{id}/feedback
+-- and the incident:feedback capability — was removed on 2026-08-25 to keep the
+-- product surface small while nothing consumed the data yet. The table held ZERO
+-- rows at that point, so this drops no user data.
+--
+-- It is a deliberate removal, not abandonment: WISHLIST.md W1 carries what the
+-- feature did, how it worked, and the eight design decisions that are expensive to
+-- re-derive (feedback binds to an ANALYSIS not an incident; analysis_id stays
+-- nullable; 'partly' is a real answer; the two verdicts come apart in both
+-- directions; two people may disagree; no FK to the partitioned incidents table;
+-- the RLS policy's empty-means-unrestricted branch; free text is the valuable
+-- column). The down migration below is 000053's up verbatim, so the schema —
+-- comments included — is recoverable by rolling back rather than rewritten.
+DROP TABLE IF EXISTS incident_feedback;

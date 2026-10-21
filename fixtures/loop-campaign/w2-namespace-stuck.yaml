@@ -1,0 +1,18 @@
+# Loop campaign, wave 2 — S29: a Namespace stuck Terminating (rule namespace-stuck-terminating).
+# Apply, then `kubectl delete namespace argus-loop-term --wait=false`: the ConfigMap's finalizer
+# keeps the namespace Terminating. Clear it by removing the finalizer:
+#   kubectl -n argus-loop-term patch configmap s29-held --type merge -p '{"metadata":{"finalizers":null}}'
+# Expected: an incident while it is stuck, closed by the cleared check re-running the rule
+# ("rule namespace-stuck-terminating no longer fires" or the namespace no longer exists).
+apiVersion: v1
+kind: Namespace
+metadata: {name: argus-loop-term, labels: {argus.io/purpose: loop-campaign}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: s29-held
+  namespace: argus-loop-term
+  labels: {loop.argus.io/scenario: S29}
+  finalizers: [loop.argus.io/never-removed]
+data: {k: v}

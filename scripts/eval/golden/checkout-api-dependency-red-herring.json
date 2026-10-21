@@ -1,0 +1,72 @@
+{
+  "id": "checkout-api-dependency-red-herring",
+  "description": "A plausible-but-wrong distractor (a readiness-probe warning) shows up in get_events before the real cause. The real cause — a downstream database connection failure — only appears in the previous container's logs. A shallow investigation that concludes off the first event alone gets this wrong.",
+  "finding": {
+    "detectorId": "pod-status",
+    "severity": "high",
+    "namespace": "prod",
+    "objectName": "checkout-api-6b9f6c7d9-abc12",
+    "reason": "CrashLoopBackOff",
+    "message": "Back-off restarting failed container checkout-api in pod checkout-api-6b9f6c7d9-abc12",
+    "occurrenceCount": 9
+  },
+  "toolResponses": {
+    "get_events": [
+      {
+        "match": {},
+        "data": [
+          {
+            "namespace": "prod",
+            "involvedObjectKind": "Pod",
+            "involvedObjectName": "checkout-api-6b9f6c7d9-abc12",
+            "reason": "Unhealthy",
+            "message": "Readiness probe failed: HTTP probe failed with statuscode: 503",
+            "type": "Warning",
+            "count": 4,
+            "lastTimestamp": "2026-08-19T09:55:00Z"
+          },
+          {
+            "namespace": "prod",
+            "involvedObjectKind": "Pod",
+            "involvedObjectName": "checkout-api-6b9f6c7d9-abc12",
+            "reason": "BackOff",
+            "message": "Back-off restarting failed container",
+            "type": "Warning",
+            "count": 9,
+            "lastTimestamp": "2026-08-19T10:00:00Z"
+          }
+        ]
+      }
+    ],
+    "get_logs": [
+      {
+        "match": { "previous": "true" },
+        "data": {
+          "lines": [
+            "time=2026-08-19T09:59:50Z level=info msg=\"checkout-api starting up\"",
+            "time=2026-08-19T09:59:52Z level=fatal msg=\"could not connect to database orders at postgres-primary.prod.svc:5432: connection refused\"",
+            "panic: failed to initialize DB connection pool"
+          ]
+        }
+      },
+      {
+        "match": {},
+        "data": { "lines": [] }
+      }
+    ],
+    "get_gitops_ownership": [
+      {
+        "match": {},
+        "data": { "managed_by": "none" }
+      }
+    ]
+  },
+  "expected": {
+    "type": "definite",
+    "requiredKeywords": ["database", "connection"],
+    "forbiddenKeywords": ["unhealthy", "probe"],
+    "minConfidence": 0.5,
+    "minIterations": 3,
+    "maxIterations": 5
+  }
+}

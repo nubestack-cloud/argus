@@ -1,0 +1,1 @@
+DROP TABLE remediation_execution_attempts;

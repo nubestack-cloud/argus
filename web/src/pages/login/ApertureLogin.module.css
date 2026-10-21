@@ -1,0 +1,172 @@
+/* Transcribed verbatim from argus-login-02-aperture.html.
+ *
+ * MECHANICAL CHANGES ONLY, all forced by CSS Modules:
+ *   1. `:root` -> `.root`; `html,body` + `body` -> `.root` (position:fixed,
+ *      inset:0 so a route gets the full-viewport, non-scrolling frame the
+ *      source got from owning the document).
+ *   2. `*` -> `.root, .root *`.
+ *   3. `h1{...}` -> `.root h1{...}`. A bare element selector in a module is
+ *      NOT scoped, so this would otherwise restyle every h1 in the app.
+ *
+ * Nothing else: not a value, not an easing curve, not a rotation duration
+ * (78s / 52s / 26s / 7.5s), not a stroke-dasharray.
+ */
+
+.root{
+  --black:#000;
+  --panel:#060C0D;
+  --teal:#3C7D7D;
+  --teal-bright:#6FB3B3;
+  --amber:#F0975B;
+  --deep:#14322F;
+  --light:#EAF7F5;
+  --muted:#7E9494;
+  --danger:#E2585B;
+  --ease-expo:cubic-bezier(.16,1,.3,1);
+  --ease-smooth:cubic-bezier(.65,0,.35,1);
+}
+.root, .root *{box-sizing:border-box;margin:0;padding:0}
+.root{
+  position:fixed;inset:0;
+  background:var(--black);color:var(--light);
+  font-family:Inter,system-ui,-apple-system,sans-serif;
+  overflow:hidden;-webkit-font-smoothing:antialiased;
+}
+.grid{display:grid;grid-template-columns:1.12fr .88fr;min-height:100vh}
+
+/* ---------- LEFT : aperture ---------- */
+.visual{position:relative;overflow:hidden;background:radial-gradient(circle at 38% 50%,#0A1617 0%,#010404 62%,#000 100%)}
+.eye{
+  position:absolute;top:50%;left:34%;transform:translate(-50%,-50%);
+  width:min(126vh,1060px);height:min(126vh,1060px);
+}
+.eye svg{width:100%;height:100%;overflow:visible}
+.spinA{transform-origin:140px 140px;animation:spin 78s linear infinite}
+.spinB{transform-origin:140px 140px;animation:spinR 52s linear infinite}
+.spinC{transform-origin:140px 140px;animation:spin 26s linear infinite}
+.scan{transform-origin:140px 140px;animation:spin 7.5s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes spinR{to{transform:rotate(-360deg)}}
+
+.blade{transform-origin:140px 140px;opacity:.5}
+.iris{transform-origin:140px 140px;transform:scale(.06);opacity:0;animation:open 1.9s var(--ease-expo) .25s forwards}
+@keyframes open{to{transform:scale(1);opacity:1}}
+.pupil{transition:transform 1.1s var(--ease-expo)}
+.corepulse{transform-origin:140px 140px;animation:cp 4.5s var(--ease-smooth) infinite}
+@keyframes cp{0%,100%{opacity:.85;transform:scale(1)}50%{opacity:1;transform:scale(1.12)}}
+.glow{transform-origin:140px 140px;animation:gl 4.5s var(--ease-smooth) infinite}
+@keyframes gl{0%,100%{opacity:.16}50%{opacity:.3}}
+
+/* REMOVED: `.visual.err .iris` + `@keyframes contract` scaled the entire iris
+   to .93 and back whenever a field was empty — the "flip" the owner reported.
+   The error box is the feedback; the artwork does not react. */
+
+.overlay{position:absolute;inset:0;pointer-events:none;background:linear-gradient(90deg,transparent 40%,rgba(0,0,0,.55) 82%,#000 100%)}
+.caption{
+  position:absolute;left:52px;bottom:48px;max-width:330px;z-index:3;
+  opacity:0;animation:up 1.1s var(--ease-expo) 1.1s forwards;
+}
+.caption h2{font-family:'Space Grotesk',sans-serif;font-size:27px;font-weight:500;line-height:1.28;letter-spacing:-.015em;margin-bottom:12px}
+.caption h2 em{font-style:normal;color:var(--teal-bright)}
+/* `--light`, not the design's `--muted` (#7E9494): over the panel's radial
+   gradient that measured about 3:1, which is under the 4.5:1 body text needs
+   and the owner could not read it. Same call as the stat labels above. */
+.caption p{font-size:13.5px;line-height:1.65;color:var(--light)}
+@keyframes up{from{opacity:0;transform:translateY(22px)}to{opacity:1;transform:none}}
+/* The design's own 48px. A lockup briefly sat in this corner; the owner
+   removed the wordmark from this screen entirely — the iris IS the identity
+   here, and a second mark beside it was redundant. */
+
+/* ---------- RIGHT : form ---------- */
+.panel{
+  position:relative;background:var(--panel);
+  border-left:1px solid rgba(60,125,125,.16);
+  display:flex;align-items:center;justify-content:center;padding:44px 40px;
+}
+.panel::before{content:"";position:absolute;left:-1px;top:14%;bottom:14%;width:1px;background:linear-gradient(180deg,transparent,rgba(111,179,179,.55),transparent)}
+.form{width:100%;max-width:372px;opacity:0;animation:up 1s var(--ease-expo) .55s forwards}
+
+.root h1{font-size:28px;font-weight:600;letter-spacing:-.025em;line-height:1.2;margin-bottom:9px}
+.sub{font-size:14px;color:var(--muted);margin-bottom:34px;line-height:1.55}
+
+.field{margin-bottom:20px;position:relative}
+.field label{position:absolute;left:0;top:13px;font-size:14.5px;color:#5C7373;pointer-events:none;transition:all .35s var(--ease-expo)}
+.field input{
+  width:100%;padding:13px 0 12px;font-size:15px;font-family:inherit;color:var(--light);
+  background:transparent;border:0;border-bottom:1px solid rgba(60,125,125,.3);
+}
+.field input:focus{outline:none}
+.field.filled label,.field input:focus + label{top:-12px;font-size:10.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--teal-bright)}
+.field .bar{position:absolute;left:0;bottom:0;height:1.5px;width:100%;background:linear-gradient(90deg,var(--teal-bright),var(--amber));transform:scaleX(0);transform-origin:left;transition:transform .55s var(--ease-expo)}
+.field input:focus ~ .bar{transform:scaleX(1)}
+.peek{position:absolute;right:0;top:11px;background:none;border:0;color:#5C7373;font-size:10.5px;font-weight:500;letter-spacing:.08em;cursor:pointer;padding:4px}
+/* SHOW / HIDE is plain text that POPS on hover, not a colour swap.
+   
+   The source turned it teal (01 added a teal pill behind it too), which read as
+   "this is a link to somewhere" and, being a mid-tone on a dark ground, was
+   actually dimmer than the label it replaced — the owner's note was that
+   hovering it made the text harder to see, not easier. Hover now goes to full
+   brightness and bold with a soft glow: the same control, just asserting
+   itself. No background, so it stays text. */
+.peek:hover{color:var(--light);font-weight:700;text-shadow:0 0 12px rgba(234,247,245,.3)}
+
+.row{display:flex;justify-content:space-between;align-items:center;margin:26px 0 28px;font-size:13px}
+.check{display:flex;align-items:center;gap:9px;color:var(--muted);cursor:pointer;user-select:none}
+.check input{appearance:none;width:15px;height:15px;border:1px solid rgba(60,125,125,.45);border-radius:4px;cursor:pointer;position:relative;transition:.2s}
+.check input:checked{background:var(--teal);border-color:var(--teal)}
+.check input:checked::after{content:"";position:absolute;left:4.5px;top:1px;width:4px;height:8px;border:solid var(--light);border-width:0 2px 2px 0;transform:rotate(45deg)}
+a.link{color:var(--teal-bright);text-decoration:none}
+a.link:hover{color:var(--amber)}
+
+.btn{
+  position:relative;width:100%;padding:15px;border:0;border-radius:10px;cursor:pointer;overflow:hidden;
+  background:var(--light);color:#04100F;font-family:inherit;font-size:14.5px;font-weight:600;
+  display:flex;align-items:center;justify-content:center;gap:10px;
+  transition:transform .25s var(--ease-expo),box-shadow .3s;
+}
+.btn:hover{transform:translateY(-2px);box-shadow:0 14px 34px -12px rgba(234,247,245,.4)}
+.btn:active{transform:translateY(0) scale(.994)}
+.btn:disabled{cursor:default;transform:none}
+/* REMOVED WITH THE STAGED SUBMIT (see the screen's onSubmit): the `.btn .fill` amber sweep. The
+   sequence they belonged to reported progress and then success on a timer,
+   independently of the request — offline it announced a sign-in that had not
+   happened. */
+.btn .lbl{position:relative;display:flex;align-items:center;gap:10px}
+.spinner{width:15px;height:15px;border:2px solid rgba(4,16,15,.25);border-top-color:#04100F;border-radius:50%;animation:sp .7s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+.sep{display:flex;align-items:center;gap:13px;margin:24px 0 16px}
+.sep::before,.sep::after{content:"";flex:1;height:1px;background:rgba(60,125,125,.2)}
+.sep span{font-size:10.5px;letter-spacing:.11em;text-transform:uppercase;color:#4E6767}
+.sso{display:flex;flex-direction:column;gap:9px}
+.sso button{
+  width:100%;padding:12px;border-radius:9px;cursor:pointer;font-family:inherit;font-size:13.5px;font-weight:500;
+  background:transparent;border:1px solid rgba(60,125,125,.24);color:#B3CACA;
+  display:flex;align-items:center;gap:11px;text-align:left;
+  transition:border-color .25s,color .25s,background .25s,transform .25s var(--ease-expo);
+}
+.sso button:hover{border-color:rgba(111,179,179,.6);color:var(--light);background:rgba(16,34,35,.6);transform:translateX(3px)}
+.sso .k{width:22px;height:22px;border-radius:6px;background:rgba(60,125,125,.16);display:grid;place-items:center;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--teal-bright);flex:none}
+.sso .arrow{margin-left:auto;color:#3F5454;transition:transform .25s var(--ease-expo),color .25s}
+.sso button:hover .arrow{transform:translateX(3px);color:var(--teal-bright)}
+
+.err{margin-bottom:18px;padding:11px 13px;border-radius:9px;font-size:13px;background:rgba(226,88,91,.08);border:1px solid rgba(226,88,91,.3);color:#F0A2A4;display:none}
+/* No shake — the error is a message, not an event to dramatise. */
+.err.show{display:block}
+
+.foot{margin-top:34px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#3F5454;letter-spacing:.06em;display:flex;justify-content:space-between}
+/* The "powered by nubestack.com" attribution, carried by both screens.
+   The link inherits the footer's own colour rather than taking a link colour:
+   this row is deliberately the quietest thing on the screen, and a teal link in
+   it would outrank the version beside it. Hover is where it announces itself. */
+.foot a{color:inherit;text-decoration:none;transition:color .2s}
+.foot a:hover{color:var(--light);text-decoration:underline}
+.tag{position:fixed;right:22px;top:20px;z-index:9;font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.14em;color:#3B4F4F;text-transform:uppercase}
+
+@media (max-width:920px){
+  .grid{grid-template-columns:1fr;grid-template-rows:38vh 1fr}
+  .eye{width:110vw;height:110vw;left:50%;top:44%}
+  .caption{display:none}
+  .panel{border-left:0;border-top:1px solid rgba(60,125,125,.16)}
+}
+@media (prefers-reduced-motion:reduce){.root, .root *{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}

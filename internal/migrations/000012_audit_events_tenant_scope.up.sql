@@ -1,0 +1,43 @@
+-- Fixes the same structural RLS gap already found and fixed for `clusters` in
+-- migration 000011 — read that file's comment first, this is the exact same
+-- bug class, just hitting a second table now that something is finally about
+-- to write to it (internal/audit, this increment). audit_events' RLS policy
+-- from migration 000009's generic cluster_id-scoped loop is:
+--
+--   USING (cluster_id = ANY(string_to_array(current_setting('app.accessible_cluster_ids', true), ',')))
+--
+-- Two structural problems, both blocking, neither cosmetic:
+--
+--   (a) Nothing anywhere in this codebase populates app.accessible_cluster_ids
+--       with anything real — internal/api/middleware.go's requireAuth always
+--       passes nil (same root cause migration 000011 documents for the
+--       identical clusters bug). That alone means this policy, as the ONLY
+--       policy on the table, blocks every read/write for every caller,
+--       including a super-admin.
+--
+--   (b) Even once per-cluster-scoped grants exist and populate that session
+--       variable for real (authz-spec §6, still not built anywhere),
+--       `cluster_id = ANY(...)` can NEVER be true when cluster_id IS NULL —
+--       and most audit events have no cluster at all (login success/failure,
+--       enrollment-token issuance: every org-level action this increment
+--       wires up except cluster-accept and the enrollment/cert-issuance
+--       events). So this policy would keep blocking every cluster-less audit
+--       event even after (a) is fixed elsewhere, which is most of this
+--       table's rows by volume, indefinitely.
+--
+-- Fix: add a second, additive, PERMISSIVE tenant_id-keyed policy, exactly the
+-- shape migration 000011 added for `clusters`. Postgres ORs multiple
+-- permissive policies together for the same command, so this is additive,
+-- not a weakening — the existing cluster_id-based policy still applies and
+-- still narrows access further once per-cluster-scoped grants and their
+-- accessible_cluster_ids resolution are ever implemented. Until then,
+-- tenant_id scoping is the only policy that can possibly match any row, and
+-- for this confirmed single-organisation deployment (DESIGN.md
+-- §5.1/D9) it is exactly as safe as every other table's tenant_id policy
+-- already in production use (see migration 000011's identical justification
+-- for `clusters`, and lld/05-data-model.md §6's tenant-only-scoped-table
+-- pattern applied here to a table that also happens to carry a nullable
+-- cluster_id).
+
+CREATE POLICY audit_events_tenant_scope ON audit_events
+  USING (tenant_id = current_setting('app.tenant_id', true));

@@ -1,0 +1,39 @@
+apiVersion: v2
+name: argus-hub
+description: >-
+  The ARGUS hub: AI-assisted incident investigation and GitOps-first remediation
+  for a fleet of Kubernetes clusters. Serves the web UI, the API and the agents'
+  tunnel from one address, and can run its own Postgres.
+type: application
+version: 0.2.0
+appVersion: "0.2.0"
+kubeVersion: ">=1.29.0-0"
+home: https://argus.nubestack.com/
+sources:
+  - https://github.com/nubestack-collab/ARGUS
+icon: https://argus.nubestack.com/images/argus-logo.svg
+keywords: [kubernetes, incident-management, aiops, gitops, remediation, sre]
+maintainers:
+  - name: ARGUS maintainers
+# This cluster's own agent (values: localAgent), so an install of the hub
+# watches the cluster it runs in. charts/argus-agent links to ../argus-agent.
+dependencies:
+  - name: argus-agent
+    version: "0.2.0"
+    alias: localAgent
+    condition: localAgent.enabled
+annotations:
+  artifacthub.io/license: AGPL-3.0-only
+  artifacthub.io/category: monitoring-logging
+  artifacthub.io/prerelease: "false"
+  artifacthub.io/containsSecurityUpdates: "false"
+  artifacthub.io/links: |
+    - name: Documentation
+      url: https://argus.nubestack.com/
+    - name: Source
+      url: https://github.com/nubestack-collab/ARGUS
+  artifacthub.io/images: |
+    - name: argus-hub
+      image: nubestack/argus-hub
+    - name: argus-cli-runner
+      image: nubestack/argus-cli-runner

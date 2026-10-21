@@ -1,0 +1,259 @@
+# Local development profile (lld/12-deployment-design.md §4's "Compose single-node"
+# topology). See README.md's "What gets deployed" section for what each service
+# below actually does and — important, don't assume otherwise — whether any code
+# currently talks to it yet.
+#
+# Deliberately minimal: only what current code exercises is enabled. redis, nats,
+# dex, and minio are all commented out below — none of them have a Go client
+# anywhere in this repo yet. Uncomment redis when remediation locking/rate-limits
+# are implemented, nats when the agent tunnel is, dex when SSO login is, minio
+# when evidence-blob capture is. Adding a compose service back is a two-minute
+# change; running three idle containers for months on the theory that they'll be
+# needed "soon" isn't a good trade — this was fixed once already (see STATUS.md).
+#
+# Not for production: local KEK-equivalent (plain env var password), no TLS, no
+# backup job (lld/12-deployment-design.md §5's backup requirements apply to real
+# deployments, not this dev profile).
+
+services:
+  # BACKLOG.md L2 (decided 2026-08-30, storage half): `pgvector/pgvector:pg16`
+  # is the official pgvector image built FROM `postgres:16` itself (same
+  # Postgres major version, same on-disk data format) plus the `vector`
+  # extension available to `CREATE EXTENSION` — not a different engine, and
+  # not a reason to wipe argus-postgres-data. Everything postgres:16 already
+  # provided (the role/db bootstrap below, every existing migration) is
+  # unaffected; migration 000082 is the only thing that actually calls
+  # `CREATE EXTENSION vector`.
+  postgres:
+    image: pgvector/pgvector:0.8.6-pg16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: argus
+    ports: ["5432:5432"]
+    volumes:
+      - argus-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # redis:     # Locks, rate limits, spend-ceiling counters (HLD §4.2) — not yet
+  #            # wired up; add once remediation-contracts' locking is implemented.
+  # nats:      # JetStream — finding-ingestion + agent tunnel queues
+  #            # (lld/03-agent-protocol.md) — not yet wired up; add once the agent
+  #            # tunnel is implemented. command: ["-js"]
+  # dex:       # OIDC broker (HLD §5.3) — not yet wired up; add once authz-spec's
+  #            # SSO login flow is implemented (STATUS.md §1).
+  # minio:     # Evidence blob object storage (lld/05-data-model.md §3.5) — not yet
+  #            # wired up; add once analysis-contracts' evidence capture is implemented.
+
+  # --- The hub itself, as the actual ADR-7 multi-entrypoint image, not `go run` on
+  # the host. `hub-migrate` is a one-shot init-style service (service_completed_
+  # successfully) that runs once and exits — it also sets the argus_app role's
+  # login password (internal/data/approle.go), which used to be a separate
+  # `hub-app-role` container/step; folded in here once that made the extra
+  # container redundant, since the migration-owning connection this step already
+  # holds is exactly what ALTER ROLE needs. `hub-api` is the long-running service.
+
+  hub-migrate:
+    image: nubestack/argus-hub:${ARGUS_VERSION:-0.2.0}
+    command: ["migrate"]
+    environment:
+      ARGUS_MIGRATE_DATABASE_URL: postgres://postgres:postgres@postgres:5432/argus?sslmode=disable
+      ARGUS_APP_PASSWORD: dev-local-password
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  hub-api:
+    # The release tag, ARGUS_VERSION in .env (default: this file's release).
+    # To upgrade, change ARGUS_VERSION and run `docker compose pull` then
+    # `up -d`. For a local build, tag it and set ARGUS_VERSION to that tag.
+    image: nubestack/argus-hub:${ARGUS_VERSION:-0.2.0}
+    command: ["api"]
+    environment:
+      ARGUS_DATABASE_URL: postgres://argus_app:dev-local-password@postgres:5432/argus?sslmode=disable
+      # The Postgres pool (PROJECT.md P15). Empty means "use the hub's own
+      # default" — internal/data.DefaultPoolConfig, which documents what
+      # contends for the pool and where its numbers came from. Present here as
+      # overridable rather than set, because the default is the measured one
+      # and a dev stack has no reason to differ; export ARGUS_DB_MAX_CONNS
+      # before `up` to re-run that measurement against a deliberately
+      # over-provisioned pool.
+      ARGUS_DB_MAX_CONNS: "${ARGUS_DB_MAX_CONNS:-}"
+      ARGUS_DB_MIN_CONNS: "${ARGUS_DB_MIN_CONNS:-}"
+      ARGUS_DB_MAX_CONN_LIFETIME: "${ARGUS_DB_MAX_CONN_LIFETIME:-}"
+      ARGUS_DB_MAX_CONN_IDLE_TIME: "${ARGUS_DB_MAX_CONN_IDLE_TIME:-}"
+      ARGUS_DB_HEALTH_CHECK_PERIOD: "${ARGUS_DB_HEALTH_CHECK_PERIOD:-}"
+      # Structured logging (PROJECT.md T22). The hub logs JSON by default;
+      # a local dev stack usually wants to read it with human eyes, so set
+      # ARGUS_LOG_FORMAT=text before `up` for that. ARGUS_LOG_LEVEL is
+      # debug|info|warn|error — debug adds the per-round model calls and
+      # per-tool-call tunnel lines an investigation produces, which is what
+      # you want when reconstructing one from its requestId.
+      ARGUS_LOG_LEVEL: "${ARGUS_LOG_LEVEL:-info}"
+      ARGUS_LOG_FORMAT: "${ARGUS_LOG_FORMAT:-json}"
+      ARGUS_API_ADDR: ":8080"
+      # Agents enroll at ARGUS_PUBLIC_API_URL and tunnel to the same address,
+      # as a WebSocket at /api/v1/agent/tunnel with the mTLS session inside
+      # it. Set it in .env to http://<address watched clusters reach>:8080
+      # (never localhost) to watch other clusters; the UI's "Enroll a cluster"
+      # command is built from it. Empty: agents on this machine only.
+      #
+      # Port 8443 is the optional dedicated tunnel listener, for networks that
+      # cannot carry the WebSocket: set ARGUS_TUNNEL_PUBLIC_ENDPOINT to the
+      # host:port agents dial and add that host to ARGUS_TUNNEL_SANS.
+      ARGUS_TUNNEL_ADDR: ":8443"
+      ARGUS_TUNNEL_PUBLIC_ENDPOINT: "${ARGUS_TUNNEL_PUBLIC_ENDPOINT:-}"
+      ARGUS_TUNNEL_SANS: "${ARGUS_TUNNEL_SANS:-localhost,127.0.0.1,hub-api}"
+      ARGUS_PUBLIC_API_URL: "${ARGUS_PUBLIC_API_URL:-}"
+      # Fixes the bootstrap super-admin's password (internal/authz/bootstrap.go)
+      # to a known dev-only value instead of a fresh random one every time the
+      # Postgres volume is wiped — real production installs still leave this
+      # unset and get the random-password-shown-once path (HLD §5.6); this is
+      # a local-dev convenience only, not a change to that code path. Login:
+      # admin@localhost / this value.
+      ARGUS_BOOTSTRAP_PASSWORD: "${ARGUS_BOOTSTRAP_PASSWORD:-change-me}"
+      # GET /metrics requires a bearer token and serves nothing without one
+      # (internal/api/metrics.go) — unset, the hub answers every scrape with
+      # 503. Compose has no secret generation, so this is a well-known local
+      # default in the same spirit as ARGUS_BOOTSTRAP_PASSWORD and
+      # ARGUS_CLI_RUNNER_TOKEN below: fine for a laptop stack, override it
+      # for anything reachable from a network you do not control.
+      #   curl -H "Authorization: Bearer dev-local-metrics-token" localhost:8080/metrics
+      ARGUS_METRICS_TOKEN: "${ARGUS_METRICS_TOKEN:-dev-local-metrics-token}"
+      # PROJECT.md D14. Registers POST/DELETE /api/v1/demo-data, which exist
+      # for exactly one consumer: web/e2e's globalSetup, which seeds the
+      # Playwright fixture through the real endpoints against this stack
+      # rather than mocking it (web/playwright.config.ts). It is set HERE and
+      # nowhere else on purpose — deploy/helm never sets it, so a real
+      # install has no such route at all. The endpoint writes fabricated
+      # analyses, approval decisions attributed to the caller by name,
+      # execution records and metered spend into the same tables real ones
+      # live in, and nothing excludes them from any count; that is tolerable
+      # in a dev stack whose database is disposable and nowhere else. Set it
+      # to anything other than "true" locally if you would rather your dev
+      # numbers stay honest — only the e2e suite needs it.
+      ARGUS_ENABLE_DEMO_DATA: "${ARGUS_ENABLE_DEMO_DATA:-true}"
+      # internal/llm's bounded tool-calling investigation loop
+      # (internal/llm/toolloop.go, STATUS.md's tool-loop entry) — overridable
+      # for tuning/testing, same convention as every other ARGUS_* var here.
+      # Lowering ARGUS_ANALYSIS_MAX_ITERATIONS is the fast way to exercise
+      # the iteration-bound/PartialAnalysis path against a scripted fake
+      # model (scripts/fake-llm-server -mode never-conclude) without waiting
+      # out the time limit instead.
+      ARGUS_ANALYSIS_MAX_ITERATIONS: "${ARGUS_ANALYSIS_MAX_ITERATIONS:-8}"
+      ARGUS_ANALYSIS_TIME_LIMIT_SECONDS: "${ARGUS_ANALYSIS_TIME_LIMIT_SECONDS:-180}"
+      # --- CLI-agent investigator backend (lld/14-adrs.md ADR-17) ---
+      #
+      # ARGUS_MCP_ADDR is the switch: unset (the default) and the whole CLI
+      # backend is not wired at all — no MCP listener, and selecting provider
+      # kind "cli" in Settings returns a clear configuration error. Set it and
+      # the hub serves its read-only tool surface to a runner on that port.
+      #
+      # This is deliberately its OWN listener, never the public :8080 API
+      # (lld/12-deployment-design.md §12.6) — nothing on it is reachable with
+      # a user session, and nothing on :8080 can reach these tools. It is not
+      # published to the host here for the same reason.
+      #
+      # ARGUS_MCP_PUBLIC_URL is what the *runner* dials, which is not the same
+      # string as the bind address: on this compose network it's the hub's
+      # service name, in a k8s sidecar it would be localhost.
+      ARGUS_MCP_ADDR: "${ARGUS_MCP_ADDR:-}"
+      ARGUS_MCP_PUBLIC_URL: "${ARGUS_MCP_PUBLIC_URL:-http://hub-api:9090/mcp}"
+      # Shared secret for the hub->runner direction of B12. The runner refuses
+      # to start without its half, so there is no unauthenticated mode to fall
+      # into by forgetting this.
+      ARGUS_CLI_RUNNER_TOKEN: "${ARGUS_CLI_RUNNER_TOKEN:-dev-cli-runner-token}"
+      # Related-analysis embeddings, off by default: ARGUS does not run an
+      # embedding model. To use one you already run, set ARGUS_EMBEDDINGS=on
+      # and ARGUS_OLLAMA_URL to its address (self-hosted only: it receives
+      # cluster data).
+      ARGUS_EMBEDDINGS: "${ARGUS_EMBEDDINGS:-off}"
+      ARGUS_OLLAMA_URL: "${ARGUS_OLLAMA_URL:-}"
+      ARGUS_EMBEDDING_MODEL: "${ARGUS_EMBEDDING_MODEL:-bge-m3}"
+      ARGUS_EMBEDDING_DIMS: "${ARGUS_EMBEDDING_DIMS:-1024}"
+      # BACKLOG.md F26's render-and-diff sandbox (cmd/hub/main.go). Off by
+      # default (empty), same "log and leave nil" posture as every other
+      # optional-upgrade var here. ARGUS_RENDER_SANDBOX_HOST_KUBECONFIG (a
+      # real shell env var, not compose-committed) names a kubeconfig ON THE
+      # HOST to bind-mount in read-only at the fixed in-container path this
+      # points at — never a customer cluster reached through the tunnel,
+      # per internal/render/sandbox's own package comment.
+      ARGUS_RENDER_SANDBOX_KUBECONFIG: "${ARGUS_RENDER_SANDBOX_KUBECONFIG:-}"
+      ARGUS_RENDER_SANDBOX_NAMESPACE: "${ARGUS_RENDER_SANDBOX_NAMESPACE:-argus-render-sandbox}"
+      ARGUS_RENDER_SANDBOX_RUNTIME_CLASS: "${ARGUS_RENDER_SANDBOX_RUNTIME_CLASS:-}"
+    ports: ["8080:8080", "8443:8443"]
+    # PROJECT.md B162: the hub now drains on SIGTERM (cmd/hub/main.go's
+    # drainHub) — in-flight requests, browser WebSocket feeds, background
+    # sweepers, then the agent tunnels. Compose's default stop grace is 10s,
+    # which would SIGKILL the hub partway through that, so this matches what
+    # deploy/helm/argus-hub derives for terminationGracePeriodSeconds. It only
+    # lengthens how long `docker compose down/stop` may take when there is
+    # something to drain; an idle hub still exits in well under a second.
+    stop_grace_period: 60s
+    depends_on:
+      hub-migrate:
+        condition: service_completed_successfully
+    # host-gateway lets hub-api (inside the container) reach a process
+    # listening on a host port — used in dev/verification to point
+    # PUT /api/v1/admin/settings's llm.baseUrl at a locally-run
+    # scripts/fake-llm-server instead of a real hosted/self-hosted model
+    # server. Linux Docker Engine >= 20.10 required (the same requirement
+    # Docker Desktop's own host.docker.internal already has on macOS/Windows
+    # without this line) — a real production deployment has no reason to
+    # set this at all.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Inert when ARGUS_RENDER_SANDBOX_HOST_KUBECONFIG is unset (mounts
+    # /dev/null read-only, which ARGUS_RENDER_SANDBOX_KUBECONFIG being empty
+    # above means nothing ever tries to read) — the same
+    # env-var-driven-default idiom every other optional path in this file
+    # already uses, so this stays a no-op for anyone who never opts in.
+    volumes:
+      - "${ARGUS_RENDER_SANDBOX_HOST_KUBECONFIG:-/dev/null}:/render-sandbox/kubeconfig.yaml:ro"
+
+  # CLI-agent runner (cmd/cli-runner, lld/12-deployment-design.md §12).
+  #
+  # Behind a compose profile, so it is genuinely absent from a normal
+  # `docker compose up` — the same off-by-default posture the chart surface in
+  # §12.3 specifies, and the same reason: an operator who never opts in never
+  # has the B12 boundary at all. Start it explicitly:
+  #
+  #   docker compose --profile cli-runner up -d
+  #
+  # A separate service rather than a second process in hub-api's container:
+  # §12.1 — the hub image is distroless/read-only/shell-less and holds the
+  # Postgres credential, the agent mTLS material and the plan-signing root
+  # key, none of which a Node dependency tree has any business sitting next to.
+  cli-runner:
+    profiles: ["cli-runner"]
+    image: nubestack/argus-cli-runner:${ARGUS_VERSION:-0.2.0}
+    environment:
+      ARGUS_CLI_RUNNER_ADDR: ":8090"
+      # Must match hub-api's own ARGUS_CLI_RUNNER_TOKEN above.
+      ARGUS_CLI_RUNNER_TOKEN: "${ARGUS_CLI_RUNNER_TOKEN:-dev-cli-runner-token}"
+      # Bounded worker pool: each in-flight investigation is a real CLI process
+      # with a real memory footprint, so this is the difference between
+      # shedding load and OOM-killing the container (§12.5). Raising
+      # MAX_IN_FLIGHT without also raising the memory limit converts a
+      # capacity problem into an OOMKill.
+      ARGUS_CLI_MAX_IN_FLIGHT: "${ARGUS_CLI_MAX_IN_FLIGHT:-2}"
+      ARGUS_CLI_QUEUE_DEPTH: "${ARGUS_CLI_QUEUE_DEPTH:-16}"
+      # Declares how the operator's credential is billed, which is what lets
+      # a zero cost be reported honestly as "subscription" (unavailable)
+      # rather than as a measured $0.00 — lld/07-analysis-contracts.md §10.5.
+      ARGUS_CLI_AUTH_MODE: "${ARGUS_CLI_AUTH_MODE:-}"
+      # Operator-supplied model credential. ARGUS never ships one (§10.7);
+      # pass whichever your chosen auth mode needs through the shell env.
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      CLAUDE_CODE_OAUTH_TOKEN: "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+    # Not published to the host: only hub-api needs to reach it, over this
+    # compose network.
+    expose: ["8090"]
+
+volumes:
+  argus-postgres-data:

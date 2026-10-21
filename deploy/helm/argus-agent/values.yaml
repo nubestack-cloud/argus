@@ -1,0 +1,369 @@
+# ARGUS agent: connects one Kubernetes cluster to an ARGUS hub.
+#
+# An install needs two values: hub.apiUrl and an enrollment token
+# (enrollment.tokenSecretRef, or enrollment.token for a quick test). The hub's
+# Clusters page prints the exact command.
+#
+# WHAT RUNS HERE
+#
+#   argus-investigate (always). A single-replica Deployment under a
+#     ServiceAccount that can list, get and watch, and nothing else: no write
+#     verb on anything, no Secrets, no pods/exec, no nodes/proxy. It detects
+#     problems, answers the hub's read-only investigation requests, and reports
+#     cluster facts. The API server refuses any write from it, whatever the
+#     hub asks.
+#
+#   argus-remediate (remediate.enabled, off by default). A second Deployment
+#     under its own ServiceAccount that executes approved, signed remediation
+#     plans in the namespaces you list. ValidatingAdmissionPolicies limit its
+#     writes to the fields ARGUS's typed actions change. It runs no detectors,
+#     never enrolls (it uses the identity the investigation agent enrolled),
+#     and connects to the hub on its own tunnel connection, so read-only work
+#     and write work never share a credential.
+#
+#   argus-dryrun (dryRun.enabled) and argus-policy-controller
+#     (policyController.enabled): optional, narrower identities, described at
+#     their keys below.
+#
+# Every identity lives in argus-system with a fixed ServiceAccount name: the
+# admission policies match those exact names.
+
+# Read only when the hub chart installs this chart for its own cluster (its
+# localAgent values): `enabled: false` turns that agent off, and `embedded`
+# (set by the hub chart) points the agent at the hub's in-cluster Service.
+# A standalone install ignores both.
+enabled: true
+embedded: false
+
+namespace:
+  # Fixed: the admission policies match
+  # "system:serviceaccount:argus-system:<name>".
+  name: argus-system
+  # false when your namespaces are created centrally (for example by GitOps).
+  create: true
+
+serviceAccount:
+  # The read-only identity the agent always runs as. Nothing binds a write
+  # role to it.
+  name: argus-investigate
+
+# Argo CD's API, for field-level drift on objects applied server-side or by
+# Helm (which carry no last-applied configuration). url is an argocd-server
+# address the agent can reach, e.g. http://argocd-server.argocd;
+# tokenSecretRef names a Secret holding an Argo CD token that can `get`
+# applications. Without it the GitOps tab still shows Argo CD's own
+# Synced/OutOfSync verdict per object.
+gitops:
+  argocd:
+    url: ""
+    tokenSecretRef:
+      name: ""
+      key: token
+
+# Kubecost's allocation API as the Cost tab's source, instead of OpenCost
+# metrics in Prometheus. url is the cost-analyzer (or aggregator) API base,
+# e.g. http://kubecost-cost-analyzer.kubecost:9090; headersSecretRef optionally
+# names a Secret with `Name: value` request headers. Figures stay in
+# Kubecost's own currency.
+cost:
+  kubecost:
+    url: ""
+    headersSecretRef:
+      name: ""
+      key: headers
+
+# Let the hub upgrade this agent ("Upgrade agent" on the cluster's Agent tab,
+# offered when the hub's agent image differs from what runs here). Needs
+# remediate.enabled: the remediate identity gets get/patch on the two agent
+# Deployments only, and an upgrade may only set an image from
+# image.repository.
+selfUpgrade:
+  enabled: false
+
+remediate:
+  # Opt-in, per cluster: executes approved remediation plans. Adds the
+  # argus-remediate Deployment; the investigation agent stays read-only.
+  enabled: false
+  serviceAccount:
+    # Fixed: the admission policies match this name.
+    name: argus-remediate
+
+  # WHERE remediation may act. When enabled is true, set namespaces or
+  # allNamespaces; the chart refuses to render with neither, because an empty
+  # grant would fail every execution and a silent cluster-wide grant would
+  # reach kube-system. The admission policies restrict fields, never
+  # namespaces, so this list is the namespace boundary.
+  #
+  # CordonNode and DrainNode, separately opt-in: the grant (patch nodes, list
+  # pods, create pods/eviction) is cluster-wide and cannot be narrowed by
+  # name. An admission policy limits the node write to spec.unschedulable.
+  nodeOps:
+    enabled: false
+  # The namespaces ARGUS may remediate in: one Role and RoleBinding each.
+  # Prefer this.
+  namespaces: []
+  #   - apps
+  #   - team-payments
+  #
+  # Cluster-wide write, kube-system and every other system namespace
+  # included. RBAC cannot express "everything except kube-system", so for
+  # broad coverage prefer listing the namespaces you run workloads in.
+  allNamespaces: false
+
+dryRun:
+  # Opt-in, per cluster: the dry_run_patch investigation tool, which lets an
+  # investigation check that a proposed change would be admitted. The
+  # argus-dryrun identity holds write verbs on a small set of resources, and
+  # an admission policy refuses anything it sends that is not dryRun=All, so
+  # nothing it submits is ever persisted. Independent of remediate.enabled,
+  # and mounted as its own credential so the two grants never combine.
+  enabled: false
+  serviceAccount:
+    # Fixed: the dry-run admission policy matches this name.
+    name: argus-dryrun
+  # Where its token is mounted in the agent container.
+  tokenMountPath: /var/run/argus-agent/dryrun-token
+
+policyController:
+  # Opt-in, per cluster: per-execution admission scoping. The
+  # argus-policy-controller identity can only write ExecutionWindow objects
+  # (an argus.io/v1 CRD this chart installs), which the remediation admission
+  # policies read to admit a field for the duration of one approved execution.
+  # It holds no RBAC on any workload, and argus-remediate cannot widen its own
+  # policy bound. Mounted in the remediation Pod, so it does nothing without
+  # remediate.enabled.
+  enabled: false
+  serviceAccount:
+    # Fixed: the policy controller's RBAC and the admission policies'
+    # paramRef match this name.
+    name: argus-policy-controller
+  # Where its token is mounted in the remediation container.
+  tokenMountPath: /var/run/argus-agent/policy-controller-token
+
+# The in-memory object cache the cluster views and insight tools read.
+# Values that can carry secrets (container env values, ConfigMap data) are
+# stored as hashes, and Secrets are never cached. excludeKinds drops kinds,
+# as "group/Kind" (core group: "/Kind"), e.g. ["/ConfigMap"]; features that
+# read an excluded kind report themselves incomplete.
+objectCache:
+  enabled: true
+  excludeKinds: []
+
+# Posture checks, run from the object cache on a slow timer. Results are risk
+# signals (shown on Signals, never opening incidents). Danger-level results
+# are reported by default; emitWarnings adds the rest. ignoredNamespaces
+# replaces the default list (kube-system, kube-public, kube-node-lease,
+# argus-system, cattle-*); disabledChecks takes check IDs.
+posture:
+  enabled: true
+  interval: 1h
+  emitWarnings: false
+  ignoredNamespaces: []
+  disabledChecks: []
+
+# Certificate expiry. cert-manager Certificates are always checked.
+# probeIngressHosts also opens a TLS connection to each Ingress address with
+# the host as SNI, reads the certificate presented and closes (no HTTP
+# request, no Secret read). That is outbound network activity for a read-only
+# identity, so it is off unless you turn it on.
+certExpiry:
+  probeIngressHosts: false
+
+# Helm release status: latest revision and failed or stuck operations, read
+# from Helm release Secret labels only. Release payloads are never read.
+helmStatus:
+  enabled: true
+
+metrics:
+  # Opt-in, per cluster: the query_metrics investigation tool. Not another
+  # identity: argus-investigate gains `get` on the proxy subresource of the
+  # one Prometheus Service named below, so the API server proxies the query
+  # and the agent needs no network route to Prometheus. Leave it empty and
+  # query_metrics is simply unavailable.
+  #
+  # external: a Prometheus-compatible endpoint that is not a Service in this
+  # cluster (a managed or central Prometheus, Thanos, Mimir, VictoriaMetrics).
+  # When url is set it is used instead of prometheusService.
+  #   headersSecretRef: a Secret holding request headers, one `Name: value`
+  #     per line (e.g. `Authorization: Bearer ...`, `X-Scope-OrgID: prod-eu`).
+  #   extraLabel: e.g. `cluster=prod-eu`, sent as `extra_label` on every
+  #     query. VictoriaMetrics and prom-label-proxy enforce it; plain
+  #     Prometheus and Thanos ignore it, so on a shared endpoint without one
+  #     of those in front, queries see every cluster's series.
+  #   caBundle: PEM for a private CA, appended to the system roots.
+  external:
+    url: ""
+    headersSecretRef:
+      name: ""
+      key: headers
+    extraLabel: ""
+    caBundle: ""
+  prometheusService:
+    # e.g. "cattle-monitoring-system" (Rancher monitoring) or "monitoring"
+    # (kube-prometheus-stack).
+    namespace: ""
+    # A Service name, e.g. "rancher-monitoring-prometheus" or
+    # "prometheus-operated" (not a Pod or StatefulSet name).
+    name: ""
+    # The Service port serving Prometheus's HTTP API. Check it with
+    # `kubectl get svc -n <namespace> <name> -o jsonpath='{.spec.ports}'`.
+    port: 9090
+
+hub:
+  # Required. The hub's URL, as shown on its Clusters page, e.g.
+  # "https://argus.example.com".
+  apiUrl: ""
+
+  # Leave empty: the agent tunnels to the address the hub gives it when it
+  # enrolls (normally a WebSocket at apiUrl). Set it to move an enrolled agent
+  # to another path without enrolling again, e.g. from a dedicated tunnel port
+  # to the hub's Ingress: "wss://argus.example.com/api/v1/agent/tunnel".
+  tunnelEndpoint: ""
+
+  # Trust a private CA for HTTPS to apiUrl, e.g. an internal issuer behind
+  # the hub's Ingress. Set one of these, not both. The bundle is appended to
+  # the image's system roots, so a hub that later moves to a public
+  # certificate keeps verifying. A bundle with no PEM certificate in it stops
+  # the agent at startup rather than being ignored.
+  #
+  # The tunnel's own mTLS pins the CA the hub hands back at enrollment and
+  # does not use either trust set.
+  #
+  # caBundle: the PEM text (one or more certificates), rendered into a
+  # ConfigMap, since a CA certificate is public:
+  #   --set-file hub.caBundle=./internal-ca.pem
+  caBundle: ""
+  # caSecretRef: an existing Secret in argus-system holding the PEM under
+  # `key`, e.g. the ca.crt a cert-manager Certificate writes. Mounted by the
+  # kubelet, so the agent's ServiceAccount gains no Secret read.
+  caSecretRef:
+    name: ""
+    key: ca.crt
+
+enrollment:
+  # Preferred: a Secret you create (kubectl, Sealed Secrets, External Secrets,
+  # Vault), so the token never appears in values or in Helm's stored release:
+  #   kubectl create secret generic argus-enrollment-token \
+  #     --namespace argus-system --from-literal=token=<token from the hub>
+  # then set tokenSecretRef.name: argus-enrollment-token.
+  #
+  # A fleet token (Clusters -> Fleet tokens on the hub) works the same way and
+  # can be shared by every cluster in a GitOps rollout.
+  tokenSecretRef:
+    name: ""      # e.g. "argus-enrollment-token"; empty uses `token` below
+    key: token    # key within that Secret holding the token
+
+  # Quick tests only: the chart writes this into a Secret it creates. Never
+  # commit a populated value.
+  token: ""
+
+  # Name of the Secret the chart creates when `token` is used.
+  generatedSecretName: argus-agent-enrollment-token
+
+# Leave empty unless you are deliberately running a second agent against a
+# cluster that already has one.
+#
+# Empty means the agent derives its fingerprint from the cluster's
+# kube-system namespace UID, so one physical cluster is one ARGUS cluster,
+# and the hub refuses a second enrollment with the same fingerprint (409
+# "already enrolled").
+#
+# Set it only to run a differently configured agent alongside the existing
+# one, for comparison before retiring it. Any value that is stable across
+# restarts works; a readable one ("<cluster>-scoped-rollout") is easier to
+# recognise in the audit log. Both agents watch the same objects, so the same
+# fault opens an incident on both. Clear it (and remove the extra cluster)
+# afterwards.
+clusterFingerprint: ""
+
+# The cluster's name in ARGUS. Optional: empty lets the hub choose one, and
+# an operator can rename it on the hub at any time.
+displayName: ""
+
+# Leave at 1: the hub holds exactly one live connection per cluster and
+# role, so a second replica would only race the first.
+replicaCount: 1
+
+image:
+  repository: nubestack/argus-agent
+  # The release tag, for reading. `digest` is what is pulled when set.
+  tag: "0.2.0"
+  # The release's image digest. A tag can be moved; a digest cannot, so a
+  # chart version always installs the same image. Clear it to pull by `tag`
+  # (for example a locally built image), and set pullPolicy to Always if the
+  # tag moves.
+  digest: "sha256:71bcfca326d62550a7a379316e372589c1053ae606c8584baa8e8a1dc82fe895"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# Where this agent's identity lives.
+#
+# The hub issues the agent a private key, a certificate, the tunnel CA, a
+# cluster id, a remediation-plan signing key and a cluster fingerprint.
+# Losing them disconnects the cluster: it then needs a new enrollment token
+# and (unless the token auto-accepts) a new approval on the hub.
+#
+#   secret    (default): a Secret in argus-system that the chart creates and
+#               the agent reads and updates through a Role restricted to that
+#               one Secret name. Needs no StorageClass and survives node loss.
+#   ephemeral: the identity lives in dataDir, so any Pod replacement
+#               (reschedule, drain, eviction, `helm upgrade`, a config edit)
+#               loses it. The agent logs a warning on every start in this
+#               mode. Use it only where that is acceptable.
+#
+# Any other value fails the render.
+identity:
+  mode: secret
+  # Only used when mode is "secret".
+  secretName: argus-agent-identity
+
+# The agent's working directory, and its identity's location when
+# identity.mode is "ephemeral". An emptyDir unless persistence.enabled.
+dataDir: /var/run/argus-agent
+
+# Back dataDir with a PersistentVolumeClaim instead of an emptyDir. Off by
+# default because a fleet's clusters cannot all be assumed to have a usable
+# default StorageClass; the identity Secret above already survives restarts
+# without one. An agent moving from a PVC to identity.mode: secret keeps its
+# identity: it adopts what it finds in dataDir on first start.
+persistence:
+  enabled: false
+  # Empty uses the cluster's default StorageClass.
+  storageClass: ""
+  # Deprecated alias of storageClass, read only while storageClass is empty.
+  storageClassName: ""
+  size: 64Mi
+  accessModes:
+    - ReadWriteOnce
+
+# Sized from measurements of a sweep pass against synthetic clusters, read
+# through this chart's own read-only ClusterRole. The limit covers the peak a
+# periodic sweep makes; the request covers the flat line between sweeps.
+#
+#   pods    objects   peak memory of a full sweep
+#   1,000     2,420   ~165Mi
+#   2,500     4,907   ~525Mi
+#   5,000     9,587   ~881Mi of a 1Gi limit
+#
+# The default limit covers about 5,000 pods / 10,000 objects with every check
+# running. Past roughly 6,700 pods the agent skips the most memory-hungry read
+# rather than running out of memory, keeps every other check running, and
+# says so in the cluster's detector status. To size it yourself:
+# limit >= pods x 156KiB (1,000 pods -> 256Mi, 2,500 -> 512Mi,
+# 5,000 -> 1Gi, 10,000 -> 2Gi).
+#
+# The object cache adds a steady copy of watched objects with managedFields,
+# last-applied and sensitive values stripped: about 40Mi for a cluster of a
+# few hundred pods.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

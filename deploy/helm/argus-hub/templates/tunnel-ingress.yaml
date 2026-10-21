@@ -1,0 +1,42 @@
+{{- if .Values.tunnel.ingress.enabled }}
+{{- $fullname := include "argus-hub.fullname" . }}
+{{- if not .Values.tunnel.ingress.host }}
+{{- fail "tunnel.ingress.enabled requires tunnel.ingress.host (the SNI name agents dial, which must also be tunnel.publicEndpoint's host)" }}
+{{- end }}
+{{- if ne .Values.tunnel.publicEndpoint (printf "%s:443" .Values.tunnel.ingress.host) }}
+{{- fail (printf "tunnel.publicEndpoint (%q) must be %q when tunnel.ingress is enabled: passthrough routes by the SNI name the agent dials (and the tunnel certificate is issued for that host), and ingress-nginx serves passthrough on 443" .Values.tunnel.publicEndpoint (printf "%s:443" .Values.tunnel.ingress.host)) }}
+{{- end }}
+{{- if and .Values.ingress.enabled (eq .Values.tunnel.ingress.host .Values.ingress.host) }}
+{{- fail "tunnel.ingress.host must differ from ingress.host: passthrough claims its host for raw TLS, so sharing one would send the UI's HTTPS straight to the tunnel" }}
+{{- end }}
+# SNI passthrough for the agent tunnel — see values.yaml's tunnel.ingress.
+# ingress-nginx forwards the TLS bytes untouched, so the agent's client
+# certificate reaches the hub exactly as it would on a direct connection.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}-tunnel
+  labels: {{- include "argus-hub.labels" . | nindent 4 }}
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+    {{- with .Values.tunnel.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- with .Values.tunnel.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.tunnel.ingress.host | quote }}
+      http:
+        # Required by the Ingress schema; passthrough ignores paths entirely
+        # and routes on the SNI host alone.
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}-tunnel
+                port:
+                  number: {{ .Values.tunnel.service.port }}
+{{- end }}

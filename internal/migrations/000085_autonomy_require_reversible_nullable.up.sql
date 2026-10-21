@@ -1,0 +1,22 @@
+-- BUGS.md 97: PUT /api/v1/admin/settings silently resets
+-- autonomy.requireReversibleForAutoApprove to false on any request that
+-- includes an "autonomy" section but omits that one field. Root cause:
+-- unlike its siblings autonomy_auto_approve_max_risk/
+-- autonomy_min_confidence_for_auto_approve (migration 000028), this column
+-- was NOT NULL DEFAULT true, so it had no "not configured" state at all --
+-- Go's JSON decoder leaves an absent key's plain bool at its zero value,
+-- false, which for THIS field is the permissive direction (it is the
+-- belt-and-suspenders check on top of the risk ceiling), and that zero
+-- value then overwrote the column unconditionally.
+--
+-- This migration makes the column nullable, matching its two siblings'
+-- contract exactly: NULL means "not configured in the DB, fall back to
+-- internal/orchestrator.DefaultAutonomyPolicy's own conservative value"
+-- (which is true -- the safe direction), not "explicitly set to false".
+-- Existing rows already hold true or false (never NULL, since the column
+-- was NOT NULL); those concrete values are preserved as-is and continue to
+-- mean exactly what they said. DEFAULT true is kept for any INSERT that
+-- doesn't mention the column, so a brand-new org_settings row still starts
+-- in the safe state.
+ALTER TABLE org_settings
+  ALTER COLUMN autonomy_require_reversible_for_auto_approve DROP NOT NULL;

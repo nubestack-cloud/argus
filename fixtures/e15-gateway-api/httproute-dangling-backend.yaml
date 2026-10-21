@@ -1,0 +1,14 @@
+# route-level: backendRef names a Service that does not exist -> ResolvedRefs=False
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: route-dangling-backend
+  namespace: gwapi-verify
+spec:
+  parentRefs:
+    - name: gw-listener-conflict
+  hostnames: ["conflict.example.com"]
+  rules:
+    - backendRefs:
+        - name: no-such-service
+          port: 8080

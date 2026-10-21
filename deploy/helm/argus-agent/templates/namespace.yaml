@@ -1,0 +1,18 @@
+{{- if not (include "argus-agent.skip" .) }}
+{{- if .Values.namespace.create }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespace.name }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+  annotations:
+    # A `helm uninstall` of this chart must never take argus-system down with
+    # it: lld/04-rbac-profiles.md §6 expects a human to hand-place a
+    # LocalGuardrail object in this namespace, entirely outside this chart's
+    # (and the hub's) control, for a cluster running argus-dryrun and/or
+    # argus-remediate. Keep the namespace around across an uninstall so that
+    # isn't collateral damage.
+    helm.sh/resource-policy: keep
+{{- end }}
+{{- end }}

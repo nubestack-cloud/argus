@@ -1,0 +1,277 @@
+{{- $fullname := include "argus-hub.fullname" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  labels: {{- include "argus-hub.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # Recreate, not RollingUpdate: two hubs must never hold agent tunnels at the
+  # same time (see the replicaCount validation in _helpers.tpl). A rolling
+  # update would briefly run two, and agents would connect to whichever won the
+  # race. A few seconds of downtime is the correct trade here.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "argus-hub.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: hub
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "argus-hub.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: hub
+    spec:
+      serviceAccountName: {{ include "argus-hub.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # Derived, not hardcoded (PROJECT.md B162): the hub's drain is
+      # readinessDelay + one graceSeconds budget for the HTTP phase + one for
+      # the worker phase, plus five 5s constants cmd/hub/main.go spends on
+      # the background-investigation phase (two: wait, then cancel and let
+      # each record its interruption), and the WebSocket, MCP-listener and
+      # tunnel phases (wsDrainGrace). +5s of headroom on top, so raising
+      # shutdown.graceSeconds can never silently leave the grace period
+      # shorter than the drain it has to contain — which would mean kubelet
+      # SIGKILLing the hub mid-drain.
+      terminationGracePeriodSeconds: {{ add .Values.shutdown.readinessDelaySeconds (mul 2 (int .Values.shutdown.graceSeconds)) 30 }}
+      # Migrations run HERE, as init containers, so they finish before the hub
+      # container starts on install and on every upgrade — the hub refuses to
+      # serve against a schema version it does not expect. They used to run as
+      # a pre-install,pre-upgrade hook Job, which cannot work on a first
+      # install: a pre-install hook runs before any of the chart's ordinary
+      # resources exist, so the Job waited forever for a Postgres StatefulSet,
+      # a DB Secret and a ServiceAccount Helm would only create after the hook
+      # finished (found installing into a real, empty namespace, 2026-09-29).
+      # `strategy: Recreate` plus replicaCount pinned to 1 means exactly one
+      # pod ever runs these, and the old hub is already gone when they do.
+      initContainers:
+        {{- if eq .Values.postgres.mode "bundled" }}
+        - name: wait-for-postgres
+          image: {{ .Values.postgres.bundled.image | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h {{ include "argus-hub.postgresService" . }} -p 5432 -U postgres; do
+                echo "waiting for postgres..."; sleep 2
+              done
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 64Mi }
+        {{- end }}
+        - name: migrate
+          image: {{ include "argus-hub.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["migrate"]
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: ARGUS_MIGRATE_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "argus-hub.dbSecretName" . }}
+                  key: {{ include "argus-hub.dbMigrateUrlKey" . }}
+            # Sets the app role's password as part of migrating, so the role the
+            # hub connects as is given a login here rather than by hand.
+            {{- if eq .Values.postgres.mode "bundled" }}
+            - name: ARGUS_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-db
+                  key: appPassword
+            {{- else if .Values.postgres.external.appPasswordKey }}
+            - name: ARGUS_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.external.existingSecret }}
+                  key: {{ .Values.postgres.external.appPasswordKey }}
+            {{- end }}
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { memory: 512Mi }
+      containers:
+        - name: hub
+          image: {{ include "argus-hub.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["api"]
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: api
+              containerPort: 8080
+            - name: tunnel
+              containerPort: 8443
+            {{- if include "argus-hub.cliRunnerEnabled" . }}
+            - name: mcp
+              containerPort: 9090
+            {{- end }}
+          env:
+            - name: ARGUS_RESOURCE_CHANGES_RETENTION_DAYS
+              value: {{ .Values.resourceChanges.retentionDays | quote }}
+            - name: ARGUS_API_ADDR
+              value: ":8080"
+            - name: ARGUS_TUNNEL_ADDR
+              value: ":8443"
+            {{- with .Values.tunnel.publicEndpoint }}
+            # A dedicated tunnel address. Without one, agents tunnel through a
+            # WebSocket at ARGUS_PUBLIC_API_URL, the same address as the UI.
+            - name: ARGUS_TUNNEL_PUBLIC_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
+            # Where agents reach this hub: the UI's enroll command, and the
+            # tunnel unless a dedicated address is set above.
+            - name: ARGUS_PUBLIC_API_URL
+              value: {{ include "argus-hub.publicApiUrl" . | quote }}
+            - name: ARGUS_AGENT_CHART_REF
+              value: {{ .Values.agentChart.ref | quote }}
+            - name: ARGUS_AGENT_CHART_VERSION
+              value: {{ .Values.agentChart.version | quote }}
+            - name: ARGUS_AGENT_IMAGE
+              value: {{ .Values.agentImage | quote }}
+            {{- with .Values.embeddings.ollamaUrl }}
+            - name: ARGUS_OLLAMA_URL
+              value: {{ . | quote }}
+            {{- with $.Values.embeddings.model }}
+            - name: ARGUS_EMBEDDING_MODEL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- else }}
+            # No embedding model: related-analysis retrieval is off.
+            - name: ARGUS_EMBEDDINGS
+              value: "off"
+            {{- end }}
+            {{- if include "argus-hub.localAgent" . }}
+            # This cluster's own agent enrolls with this key (localAgent).
+            - name: ARGUS_LOCAL_ENROLLMENT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: argus-local-enrollment
+                  key: token
+            {{- end }}
+            - name: ARGUS_TUNNEL_SANS
+              # publicEndpoint's host, plus the in-cluster names of the TUNNEL Service
+              # (<fullname>-tunnel), so a same-cluster agent can dial it directly.
+              # The API Service's names are kept for agents enrolled before this.
+              value: {{ concat (list (regexReplaceAll ":[0-9]+$" .Values.tunnel.publicEndpoint "") (printf "%s-tunnel" $fullname) (printf "%s-tunnel.%s.svc" $fullname .Release.Namespace) $fullname (printf "%s.%s.svc" $fullname .Release.Namespace)) .Values.tunnel.extraSANs | compact | uniq | join "," | quote }}
+            - name: ARGUS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "argus-hub.dbSecretName" . }}
+                  key: {{ include "argus-hub.dbUrlKey" . }}
+            - name: ARGUS_BOOTSTRAP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.bootstrap.existingSecret | default (printf "%s-bootstrap" $fullname) }}
+                  key: {{ .Values.bootstrap.passwordKey }}
+            {{- /*
+              The Postgres pool (PROJECT.md P15). Emitted only when set, so an
+              unset value means "use the hub's own default" rather than an
+              empty string the hub has to interpret.
+            */}}
+            {{- range $env, $value := dict
+                  "ARGUS_DB_MAX_CONNS" .Values.postgres.pool.maxConns
+                  "ARGUS_DB_MIN_CONNS" .Values.postgres.pool.minConns
+                  "ARGUS_DB_MAX_CONN_LIFETIME" .Values.postgres.pool.maxConnLifetime
+                  "ARGUS_DB_MAX_CONN_IDLE_TIME" .Values.postgres.pool.maxConnIdleTime
+                  "ARGUS_DB_HEALTH_CHECK_PERIOD" .Values.postgres.pool.healthCheckPeriod }}
+            {{- if $value }}
+            - name: {{ $env }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- end }}
+            # Structured logging (PROJECT.md T22). Always set, because the
+            # level is the one knob an operator reaches for during an
+            # incident and it must not require editing a template to find.
+            # See docs/SUPPORT.md for what a bundle at each level contains.
+            - name: ARGUS_LOG_LEVEL
+              value: {{ .Values.logging.level | quote }}
+            - name: ARGUS_LOG_FORMAT
+              value: {{ .Values.logging.format | quote }}
+            - name: ARGUS_ANALYSIS_MAX_ITERATIONS
+              value: {{ .Values.analysis.maxIterations | quote }}
+            - name: ARGUS_ANALYSIS_TIME_LIMIT_SECONDS
+              value: {{ .Values.analysis.timeLimitSeconds | quote }}
+            # PROJECT.md B162's drain budget — see values.yaml's `shutdown`
+            # comment, and terminationGracePeriodSeconds below, which is
+            # derived from these same two numbers so the two cannot drift.
+            - name: ARGUS_SHUTDOWN_READINESS_DELAY_SECONDS
+              value: {{ .Values.shutdown.readinessDelaySeconds | quote }}
+            - name: ARGUS_SHUTDOWN_GRACE_SECONDS
+              value: {{ .Values.shutdown.graceSeconds | quote }}
+            # ALWAYS set, with no opt-in condition: GET /metrics requires a
+            # bearer token and serves nothing without one (internal/api/metrics.go),
+            # so a hub deployed with this variable absent would answer 503 to
+            # every scrape. templates/secret-metrics.yaml generates the value
+            # when the operator supplies none, and preserves it across
+            # upgrades. See docs/METRICS.md for how to read it back and put it
+            # in a scrape_config.
+            - name: ARGUS_METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.api.metricsTokenExistingSecret | default (printf "%s-metrics" $fullname) }}
+                  key: {{ .Values.api.metricsTokenKey }}
+            {{- if include "argus-hub.cliRunnerEnabled" . }}
+            # The switch that wires the CLI investigator backend at all. Without
+            # it a `cli` provider configured in Settings fails at analyze time
+            # with a configuration error — which is why enabling cliRunner sets
+            # it here rather than leaving it as a second thing to remember.
+            - name: ARGUS_MCP_ADDR
+              value: ":9090"
+            - name: ARGUS_MCP_PUBLIC_URL
+              value: {{ printf "http://%s:9090/mcp" $fullname | quote }}
+            - name: ARGUS_CLI_RUNNER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.cliRunner.existingSecret | default (printf "%s-cli-runner" $fullname) }}
+                  key: {{ .Values.cliRunner.tokenKey }}
+            {{- end }}
+          # PROJECT.md B162: the two probes must NOT point at the same path.
+          #
+          # /readyz depends on the database (connectivity + the SR-2 RLS
+          # preconditions) and on whether this hub is draining, so a Postgres
+          # blip takes the hub out of the Service's endpoints — which is
+          # recoverable on its own the moment the database comes back.
+          readinessProbe:
+            httpGet: { path: /readyz, port: api }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            # 30s of unreachable database before this pod leaves the
+            # endpoints, so a sub-second blip is not user-visible at all.
+            failureThreshold: 3
+          # /healthz checks the PROCESS only — it never touches the database.
+          # Both probes used to point at /healthz while /healthz pinged
+          # Postgres, so a momentary database interruption failed LIVENESS,
+          # kubelet killed the hub, and every enrolled cluster's mTLS tunnel
+          # died with it: detection stopped fleet-wide for a condition the hub
+          # could have ridden out. Never point liveness at a path with a
+          # dependency in it.
+          livenessProbe:
+            httpGet: { path: /healthz, port: api }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            failureThreshold: 3
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            # readOnlyRootFilesystem is on, and the hub needs somewhere to write
+            # its dev CA material and temp files.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}

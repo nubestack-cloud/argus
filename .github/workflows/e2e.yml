@@ -1,0 +1,118 @@
+# E2E — Playwright against a real hub+Postgres stack.
+#
+# Deliberately a SEPARATE workflow from ci.yml, not a job added to it. ci.yml's
+# own top comment states its design goal in plain terms: "fast and hermetic:
+# no Postgres service, no Docker build, no live cluster" — and this suite
+# needs exactly the three things that sentence rules out (BACKLOG.md P3: the
+# suite drives a real Chromium against a real running hub, never a mocked
+# `api/client`). Bolting that onto ci.yml would make every push/PR pay a
+# multi-minute docker-build-plus-compose-up tax for a class of bug the fast
+# gate was deliberately scoped not to catch — the same tradeoff lld/13
+# §9 makes explicitly for the (still deprioritized, D8) end-to-end GitOps
+# suite: "runs on a slower cadence... not part of the fast feedback loop."
+#
+# So: manual (workflow_dispatch) only, not on every push or pull_request. Run it
+# from the Actions tab when you want it; the release gate (release.yml) runs the
+# same Playwright suite before every release.
+name: E2E (Playwright)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+
+# compose runs the hub image the job builds, not a published one.
+env:
+  ARGUS_VERSION: ci
+
+jobs:
+  e2e:
+    name: Playwright — real hub, real Postgres, real browser
+    runs-on: ubuntu-latest
+
+    # PIN BOTH SIDES OF THE BOOTSTRAP CREDENTIAL, HERE, TOGETHER.
+    #
+    # The hub writes this password into a fresh database on first start
+    # (internal/authz/bootstrap.go's ARGUS_BOOTSTRAP_PASSWORD), and the suite
+    # logs in with it (web/e2e/api.ts). Every CI run starts from an empty
+    # volume, so these two MUST agree or globalSetup fails at login and the
+    # whole suite fails with it.
+    #
+    # They used to agree only by coincidence: both files independently
+    # defaulted to the same literal, and api.ts carried a comment asserting it
+    # matched compose. On 2026-09-16 commit 3aa8969 changed compose's default
+    # to "change-me" — a reasonable change on its own terms — and nothing
+    # failed locally, because a developer's database was already bootstrapped.
+    # The nightly run broke that night and every night after, with a bare
+    # HTTP 401 from globalSetup, until someone read six identical failures.
+    #
+    # Setting both from one place here removes the coupling from the two
+    # defaults entirely: CI no longer depends on what either file happens to
+    # default to, so changing either one cannot break this workflow again.
+    env:
+      ARGUS_BOOTSTRAP_PASSWORD: dev-admin-password-123
+      ARGUS_E2E_PASSWORD: dev-admin-password-123
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same image RUNBOOK.md's "Option A — fully containerized" builds by
+      # hand for local dev; CI does the identical two commands.
+      - name: docker build (hub image)
+        run: docker build --target hub -t nubestack/argus-hub:ci .
+
+      - name: docker compose up
+        run: docker compose -f deploy/compose/docker-compose.yaml up -d
+
+      # readyz checks RLS preconditions (lld/01-threat-model.md SR-2), not
+      # just that the process accepted a TCP connection — see RUNBOOK.md.
+      - name: wait for the hub to be ready
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8080/readyz > /dev/null; then
+              echo "hub is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::hub never became ready"
+          docker compose -f deploy/compose/docker-compose.yaml logs
+          exit 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: npm ci
+        working-directory: web
+        run: npm ci
+
+      # Only Chromium (playwright.config.ts's one project) — the other two
+      # engines Playwright can install are not exercised by this suite.
+      - name: install Playwright's Chromium
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      - name: run the suite
+        working-directory: web
+        run: npm run test:e2e
+
+      - name: upload the HTML report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: web/playwright-report/
+          retention-days: 14
+
+      - name: hub-api logs (on failure, for triage)
+        if: failure()
+        run: docker compose -f deploy/compose/docker-compose.yaml logs hub-api hub-migrate
+
+      - name: docker compose down
+        if: always()
+        run: docker compose -f deploy/compose/docker-compose.yaml down -v

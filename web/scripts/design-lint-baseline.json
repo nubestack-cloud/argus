@@ -1,0 +1,4 @@
+{
+  "_comment": "Pre-existing design-system violations, recorded so design-lint fails only on NEW drift. Tracked as PROJECT.md UX12. Do not add entries to silence a new finding — fix it instead. Regenerate only when genuinely paying debt down: node scripts/design-lint.mjs --update-baseline",
+  "counts": {}
+}

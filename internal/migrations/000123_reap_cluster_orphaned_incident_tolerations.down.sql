@@ -1,0 +1,14 @@
+-- Deliberately empty, for the reason migrations 000122 and 000120 are: this
+-- migration changes no schema at all. It is a data correction, and the rows it
+-- removed were suppression rules for clusters that no longer exist —
+-- re-inserting them would not be a rollback, it would be re-creating the
+-- defect, and the up file's own argument is that they suppress nothing either
+-- way.
+--
+-- A rollback of 000123 therefore leaves the schema exactly as 000122 left it,
+-- which is the property `migrate down` has to preserve.
+--
+-- SELECT rather than a bare comment so the file is a valid, non-empty
+-- statement for golang-migrate and cannot be mistaken for a truncated or
+-- half-written migration.
+SELECT 1;

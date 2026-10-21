@@ -1,0 +1,18 @@
+# Values for argus-hub-chart:
+#   helm upgrade --install argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart \
+#     --version 0.2.0 -n argus-system --create-namespace -f hub-values.yaml \
+#     --set-file cliRunner.modelCredential.claudeCodeOauthToken=<file>   # or anthropicApiKey
+# Images are pinned by the chart version; leave image.* unset.
+# The UI, the API and the agents' tunnel are all served at this host.
+ingress:
+  host: CHANGE_ME_HUB_HOST
+  clusterIssuer: CHANGE_ME_ISSUER   # your cert-manager ClusterIssuer; or remove it and set tls.secretName
+# Bundled Postgres (10Gi, dumped before every upgrade) is the default. For
+# production, use postgres.mode=external (docs/INSTALL.md, "External Postgres").
+# The CLI runner is deployed because a model credential is given. Keep the
+# credential out of this file: pass it with the --set-file above, or create
+#   kubectl -n argus-system create secret generic argus-model-credential --from-file=CLAUDE_CODE_OAUTH_TOKEN=<file>
+# and set cliRunner.modelCredential.existingSecret: argus-model-credential instead.
+cliRunner:
+  authMode: subscription     # only for a Claude subscription token; remove for an API key
+# Then in Settings -> AI providers: Kind CLI, Runner URL http://argus-hub-cli-runner:8090, Agent claude.

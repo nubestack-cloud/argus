@@ -1,0 +1,33 @@
+-- Index one cluster's findings by time, for the cluster timeline
+-- (GET /api/v1/clusters/{id}/timeline, internal/clustertimeline, PROJECT.md AD1).
+--
+-- The timeline reads every finding one cluster reported in a window of up to
+-- seven days. None of the existing indexes serves that predicate
+-- (cluster_id = $1 AND occurred_at BETWEEN $2 AND $3):
+--
+--   * findings_cluster_fingerprint_idx (cluster_id, fingerprint, occurred_at)
+--     can only seek on cluster_id, then walks every one of that cluster's
+--     entries in each partition and filters on time;
+--   * findings_occurred_at_idx (occurred_at, id) seeks on time but reads every
+--     cluster's findings in the window and filters on cluster afterwards —
+--     at 200 clusters that is two hundred times the rows the query wants.
+--
+-- Measured live on 2026-10-11, the sweep detector alone writes ~6,400 finding
+-- rows a day for one test cluster (every persistent risk is re-sent once per
+-- resend cooldown), so both of those scans grow with the window and the fleet.
+--
+-- Partitioned parent: Postgres builds the matching index on every existing
+-- partition and on each one created later. CONCURRENTLY is not allowed on a
+-- partitioned parent (and golang-migrate runs each migration in a transaction
+-- anyway), so this takes a SHARE lock on findings — blocking finding inserts —
+-- for as long as the build runs. On a large findings table, build it by hand
+-- first — CREATE INDEX ... ON ONLY findings under this name, then each
+-- partition's index CONCURRENTLY and ALTER INDEX ... ATTACH PARTITION — and
+-- this statement becomes a no-op through IF NOT EXISTS.
+--
+-- Numbered 000129 while 000128 belongs to a parallel change (PROJECT.md AD3).
+-- golang-migrate applies only versions above the database's current one, so
+-- the two must ship in the same build: a database that reached 000129 before
+-- 000128 existed would never apply 000128.
+CREATE INDEX IF NOT EXISTS findings_cluster_occurred_idx
+    ON findings (cluster_id, occurred_at DESC);

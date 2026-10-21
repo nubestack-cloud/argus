@@ -1,0 +1,17 @@
+{{- if not (include "argus-agent.skip" .) }}
+{{- if dig "caBundle" "" .Values.hub }}
+# PROJECT.md K2: hub.caBundle, mounted into the agent Pods and appended to
+# their system trust roots for HTTPS to hub.apiUrl. A ConfigMap, not a Secret:
+# a CA certificate is public, and nothing here needs hiding.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argus-agent-hub-ca
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+data:
+  ca.crt: |
+    {{- .Values.hub.caBundle | trim | nindent 4 }}
+{{- end }}
+{{- end }}

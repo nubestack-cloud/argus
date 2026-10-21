@@ -1,0 +1,43 @@
+-- Add PatchResourceLimits and RevertContainerImage to the action_type CHECK
+-- constraint migration 000027 defined.
+--
+-- Found live, not by inspection: the second of the two ever attempted to
+-- persist through the real path (a manually-inserted RevertContainerImage
+-- recommendation, while verifying WORKLOG §97 finding G4's digest warning)
+-- was rejected outright —
+--
+--   ERROR: new row for relation "remediation_recommendations" violates
+--   check constraint "remediation_recommendations_action_type_check"
+--
+-- — because the constraint's set was still exactly what 000027 wrote:
+-- ('ScaleDeployment', 'RestartPod', 'OpenPR'). Both PatchResourceLimits
+-- (WORKLOG §93) and RevertContainerImage (WORKLOG §93/§96) were built with
+-- full Go-side support — internal/remediation/plan.go's ActionType constants,
+-- internal/orchestrator/db.go's marshal/unmarshal switch, internal/agent
+-- /tools.go's execution, the widened ValidatingAdmissionPolicy — and neither
+-- action type was ever added here.
+--
+-- The consequence is not cosmetic. This table is written by
+-- orchestrator.ApplyAnalysisResult the moment the AI proposes ANY plan for
+-- either action type — the real, production path, not a test fixture. Every
+-- verification of these two actions so far has gone through one of two
+-- routes that happen to route around this constraint entirely: agent-side
+-- unit tests against a fake clientset, or (for every LIVE test this session)
+-- a manually-inserted recommendation row using ScaleDeployment or RestartPod
+-- as the action_type, because those two are the ones already in the
+-- constraint's set. The first live attempt to persist an ACTUAL
+-- PatchResourceLimits or RevertContainerImage recommendation — as opposed to
+-- exercising the code path with a substitute action type — hit this
+-- immediately. In the real deployment, that failure happens inside
+-- ApplyAnalysisResult, AFTER an investigation has already run and been
+-- paid for: the analysis completes, the gate evaluates the plan, and then
+-- persisting the recommendation errors out, discarding a real root cause
+-- and a real proposed fix behind an internal error the operator never sees a
+-- reason for.
+--
+-- Same drop-and-recreate shape 000027 itself would use for a constraint
+-- change (no ALTER TABLE ... ADD CONSTRAINT variant that widens an existing
+-- CHECK's value set in place; it has to be dropped and redefined).
+ALTER TABLE remediation_recommendations DROP CONSTRAINT remediation_recommendations_action_type_check;
+ALTER TABLE remediation_recommendations ADD CONSTRAINT remediation_recommendations_action_type_check
+  CHECK (action_type IN ('ScaleDeployment', 'RestartPod', 'PatchResourceLimits', 'RevertContainerImage', 'OpenPR'));

@@ -1,0 +1,27 @@
+-- PROJECT.md B144 follow-on, found live 2026-09-06 re-verifying B144's own
+-- fix: resetting incidents.auto_analysis_attempted_at on a Reopened
+-- transition (migration 000097) correctly re-admits the incident past
+-- autoanalyze.candidateQuery's own SQL WHERE clause, but
+-- autoanalyze.selectEligible's separate Go-side `HasAnalysis` exclusion
+-- (autoanalyze.go ~line 1025, `if c.HasAnalysis { continue }`) then silently
+-- discards it anyway: HasAnalysis is computed as "does this incident have
+-- ANY analyses row, ever" — true for essentially every Reopened incident,
+-- since it needed an analysis to produce the plan that was executed and
+-- later reopened. Confirmed live: `b144v2-444e47` fixture reopened,
+-- auto_analysis_reopen_count incremented and auto_analysis_attempted_at
+-- correctly reset to NULL, and the incident then sat re-eligible-but-never-
+-- picked-up for the rest of its life — zero autoanalyze log lines for it
+-- across 17+ minutes and a full hub-api restart, while other candidates were
+-- logged normally each tick.
+--
+-- HasAnalysis is not simply removable: it exists for a real, separate
+-- reason (autoanalyze.go's own doc comment) — a human's manual
+-- POST /analyze click never touches auto_analysis_attempted_at at all, so
+-- without HasAnalysis the poller would burn a redundant automatic
+-- investigation on an incident a human just analyzed by hand. The actual
+-- gap is narrower: HasAnalysis needs to mean "already analyzed THIS OPEN
+-- CYCLE", not "ever analyzed in this incident's whole history."
+-- reopened_at is that cycle boundary: candidateQuery's own HasAnalysis
+-- EXISTS subquery is updated (same commit) to only count an analyses row
+-- that postdates this timestamp, once one is recorded.
+ALTER TABLE incidents ADD COLUMN reopened_at timestamptz;

@@ -1,0 +1,19 @@
+.git
+lld/
+analysis-engine/
+node_modules/
+web/node_modules/
+web/dist/
+# TypeScript's incremental build cache (gitignored, but not previously
+# dockerignored) — caught 2026-09-09 causing a spurious `tsc -b` failure
+# inside the image build: a stale tsconfig.app.tsbuildinfo from an earlier
+# point in a long edit session got copied into the build context and
+# confused tsc about which lines had which content, reporting an error at
+# the wrong line for an identifier that had already been fixed. A fresh
+# build must never depend on host-local incremental state.
+*.tsbuildinfo
+*.md
+# ...except the third-party licences, which every image ships under /licenses.
+!THIRD_PARTY_NOTICES.md
+*.txt
+.claude/

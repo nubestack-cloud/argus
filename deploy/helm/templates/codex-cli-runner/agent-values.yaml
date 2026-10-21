@@ -1,0 +1,12 @@
+# Values for argus-agent-chart, for enrolling a cluster by hand. Usually you do
+# not need this file: the hub's Clusters -> Enroll a cluster prints the whole
+# helm install. Create the token Secret first:
+#   kubectl -n argus-system create secret generic argus-enrollment-token --from-literal=token=<token>
+hub:
+  apiUrl: https://CHANGE_ME_HUB_HOST
+enrollment:
+  tokenSecretRef:
+    name: argus-enrollment-token
+displayName: CHANGE_ME_CLUSTER_NAME
+namespace:
+  create: false

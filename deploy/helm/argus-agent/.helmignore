@@ -1,0 +1,11 @@
+# Patterns to ignore when building packages.
+.git/
+.gitignore
+*.swp
+*.bak
+*.tmp
+*.orig
+.DS_Store
+
+# The chart's own Go tests live beside it; they are not part of the chart.
+*.go

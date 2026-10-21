@@ -1,0 +1,85 @@
+{
+  "id": "catalog-term-002",
+  "description": "Termination, eviction & cleanup: Pod stuck Terminating — volume unmount hang. Catalogue entry TERM-002 (category F, rank 17 of the catalogue's categories by size, 24 entries; silent=false, risk=high, channels=inPlace). Selected because it filled the least-covered (risk, channel) cell high/inPlace. Correct answer: a statement naming one of the catalogue's candidate root causes for this signal (NFS/CSI unmount blocked; network storage unreachable).",
+  "provenance": "synthesized-from-catalog",
+  "catalogId": "TERM-002",
+  "category": "F",
+  "categoryName": "Termination, eviction & cleanup",
+  "limitation": "Synthesized from issue-catalog metadata, not from recorded cluster output: the toolResponses below present this entry's STATED signals through the real tool surface. This case grades whether the investigation maps a known signal to one of the catalogue's candidate root causes. It does not prove anything about behaviour on a real cluster, and a green score on it must not be read as cluster coverage.",
+  "finding": {
+    "detectorId": "k8s-sweep",
+    "severity": "critical",
+    "namespace": "eval-f",
+    "objectName": "term-002-63459",
+    "reason": "SweepObservation",
+    "message": "Pod stuck Terminating — volume unmount hang — Terminating > grace period; kubelet unmount errors",
+    "occurrenceCount": 1
+  },
+  "toolResponses": {
+    "describe_resource": [
+      {
+        "data": {
+          "events": [],
+          "object": {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+              "name": "term-002-63459",
+              "namespace": "eval-f"
+            },
+            "status": {
+              "conditions": [
+                {
+                  "message": "Terminating \u003e grace period; kubelet unmount errors",
+                  "reason": "SweepObservation",
+                  "status": "False",
+                  "type": "Ready"
+                }
+              ],
+              "phase": "Pending"
+            }
+          }
+        }
+      }
+    ],
+    "get_events": [
+      {
+        "data": []
+      }
+    ],
+    "get_gitops_ownership": [
+      {
+        "data": {
+          "managed_by": "none"
+        }
+      }
+    ],
+    "get_logs": [
+      {
+        "data": {
+          "lines": []
+        }
+      }
+    ],
+    "get_owner_chain": [
+      {
+        "data": []
+      }
+    ],
+    "list_resources": [
+      {
+        "data": []
+      }
+    ]
+  },
+  "expected": {
+    "type": "definite",
+    "anyOfKeywords": [
+      "csi",
+      "unreachable"
+    ],
+    "minConfidence": 0.5,
+    "minIterations": 2,
+    "maxIterations": 8
+  }
+}

@@ -1,0 +1,81 @@
+{
+  "id": "argocd-managed-imagepull",
+  "description": "A clear image-pull failure, on a resource that get_gitops_ownership reports as Argo CD-managed — exercises the 5th tool and the 'durable fix belongs in the repo, not a live patch' framing. Also a second efficiency check: a model that concludes off the first event alone never reaches the GitOps check at all.",
+  "finding": {
+    "detectorId": "pod-status",
+    "severity": "high",
+    "namespace": "prod",
+    "objectName": "notifications-worker-5f6d8b-poi23",
+    "reason": "ImagePullBackOff",
+    "message": "Back-off pulling image ghcr.io/acme/notifications-worker:2.7.1-broken",
+    "occurrenceCount": 12
+  },
+  "toolResponses": {
+    "get_events": [
+      {
+        "match": {},
+        "data": [
+          {
+            "namespace": "prod",
+            "involvedObjectKind": "Pod",
+            "involvedObjectName": "notifications-worker-5f6d8b-poi23",
+            "reason": "Failed",
+            "message": "Failed to pull image \"ghcr.io/acme/notifications-worker:2.7.1-broken\": rpc error: code = NotFound desc = manifest unknown",
+            "type": "Warning",
+            "count": 12,
+            "lastTimestamp": "2026-08-19T11:00:00Z"
+          },
+          {
+            "namespace": "prod",
+            "involvedObjectKind": "Pod",
+            "involvedObjectName": "notifications-worker-5f6d8b-poi23",
+            "reason": "BackOff",
+            "message": "Back-off pulling image \"ghcr.io/acme/notifications-worker:2.7.1-broken\"",
+            "type": "Warning",
+            "count": 12,
+            "lastTimestamp": "2026-08-19T11:00:05Z"
+          }
+        ]
+      }
+    ],
+    "describe_resource": [
+      {
+        "match": {},
+        "data": {
+          "object": {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": { "name": "notifications-worker-5f6d8b-poi23", "namespace": "prod" },
+            "status": {
+              "containerStatuses": [
+                {
+                  "name": "notifications-worker",
+                  "image": "ghcr.io/acme/notifications-worker:2.7.1-broken",
+                  "state": { "waiting": { "reason": "ImagePullBackOff", "message": "Back-off pulling image" } }
+                }
+              ]
+            }
+          },
+          "events": []
+        }
+      }
+    ],
+    "get_gitops_ownership": [
+      {
+        "match": {},
+        "data": {
+          "managed_by": "argocd",
+          "app_ref": { "kind": "Application", "namespace": "argocd", "name": "notifications-worker-app" }
+        }
+      }
+    ]
+  },
+  "expected": {
+    "type": "definite",
+    "requiredKeywords": ["image"],
+    "forbiddenKeywords": [],
+    "minConfidence": 0.5,
+    "minIterations": 3,
+    "maxIterations": 5
+  }
+}

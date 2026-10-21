@@ -1,0 +1,17 @@
+-- Self-service password change and admin password reset (lld/02-authz-spec.md
+-- §8/§9) — internal/api's PUT /users/me/password and
+-- POST /users/{id}/reset-password.
+--
+-- token_generation backs immediate access-token invalidation: internal/authz's
+-- accessTokenClaims embeds the generation number active at issuance time, and
+-- requireAuth (internal/api/middleware.go) rejects any access token whose
+-- embedded generation doesn't match the CURRENT value of this column. A
+-- password change/reset increments it, which is what makes an already-issued,
+-- not-yet-expired access token stop working immediately, rather than merely
+-- "at its next 15-minute expiry" — a stateless JWT can't be revoked any other
+-- way without a server-side blocklist, and a monotonic counter here avoids any
+-- cross-process clock-skew concern a "tokens issued before time T" timestamp
+-- comparison would otherwise carry. No RLS policy change needed: `users` is
+-- already tenant-scoped by migration 000009's generic tenant_id loop, and this
+-- is just a new column on an already-covered table.
+ALTER TABLE users ADD COLUMN token_generation integer NOT NULL DEFAULT 0;

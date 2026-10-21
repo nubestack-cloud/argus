@@ -1,0 +1,96 @@
+# Smoke test — scripts/smoke-test.sh against a real hub+Postgres stack.
+#
+# BUGS.md 113: this suite existed, worked, and covered more of the real API
+# surface than anything else in this repo ("the most complete, current
+# description of what the API actually does", CLAUDE.md's own words) — and
+# nothing ran it on any cadence. It silently accumulated 64 failing
+# assertions (out of 415) over at least a week before anyone noticed, purely
+# because noticing required a human to remember to run it by hand. A suite
+# that can drift for a week without anyone finding out cannot be trusted to
+# catch a real regression either — this workflow is what makes that
+# impossible going forward.
+#
+# Deliberately its own file, not a job bolted onto ci.yml or e2e.yml, for the
+# same reason e2e.yml gives for being separate from ci.yml: it needs a real
+# Docker build and a real running compose stack (Postgres, the hub, and —
+# for the fake-llm-server sections — real `go build`-ed throwaway binaries
+# launched as real processes), which is exactly the "fast and hermetic"
+# property ci.yml's own top comment protects. It is NOT folded into e2e.yml
+# either, even though both spin up the identical compose stack: e2e.yml
+# drives a real Chromium against the UI (a different surface, a different
+# kind of regression), and merging the two would make one workflow's failure
+# ambiguous about which surface actually broke, and slower to re-run for a
+# fix that only touches one of them.
+#
+# Manual (workflow_dispatch) only, like e2e.yml: run it from the Actions tab
+# when you want it. The release gate (release.yml) runs the same smoke test
+# before every release, so nothing ships without it.
+name: Smoke test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+
+# compose runs the hub image the job builds, not a published one.
+env:
+  ARGUS_VERSION: ci
+  # The hub writes this into the fresh database; the smoke test signs in with it.
+  ARGUS_BOOTSTRAP_PASSWORD: dev-admin-password-123
+  ARGUS_ADMIN_PASSWORD: dev-admin-password-123
+
+jobs:
+  smoke-test:
+    name: scripts/smoke-test.sh — real hub, real Postgres
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Same image RUNBOOK.md's "Option A — fully containerized" builds by
+      # hand for local dev, and the same command e2e.yml already runs in CI.
+      - name: docker build (hub image)
+        run: docker build --target hub -t nubestack/argus-hub:ci .
+
+      - name: docker compose up
+        run: docker compose -f deploy/compose/docker-compose.yaml up -d
+
+      # readyz checks RLS preconditions (lld/01-threat-model.md SR-2), not
+      # just that the process accepted a TCP connection — see RUNBOOK.md and
+      # e2e.yml's identical wait step.
+      - name: wait for the hub to be ready
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8080/readyz > /dev/null; then
+              echo "hub is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::hub never became ready"
+          docker compose -f deploy/compose/docker-compose.yaml logs
+          exit 1
+
+      # scripts/smoke-test.sh itself: builds and launches scripts/fake-llm-server
+      # and cmd/agent as real binaries for its investigation-loop sections
+      # (11/13/15), scrapes the bootstrap password from hub-api's own logs on
+      # this fresh-volume stack, and exits non-zero if any assertion failed
+      # ("$PASS passed, $FAIL failed" then `[[ "$FAIL" -eq 0 ]]` as the
+      # script's own last command) — that exit code is this job's actual
+      # gate, not this step's own success/failure alone.
+      - name: run scripts/smoke-test.sh
+        run: ./scripts/smoke-test.sh
+
+      - name: hub-api logs (on failure, for triage)
+        if: failure()
+        run: docker compose -f deploy/compose/docker-compose.yaml logs hub-api hub-migrate
+
+      - name: docker compose down
+        if: always()
+        run: docker compose -f deploy/compose/docker-compose.yaml down -v

@@ -1,0 +1,50 @@
+# E14 lifecycle matrix, row 15 — the stuck finalizer (an object carries a
+# finalizer nothing ever removes, so it is stuck Terminating forever).
+# Campaign context and the full row inventory: README.md in this directory.
+#
+# Unblocked 2026-09-06 (PROJECT.md "Decided"). RUN 2026-09-06, plain
+# kubectl fixture, `rke2`, own namespace (e14-row15-finalizer) — no GitOps
+# involved. Exercises internal/agent/generic_predicates.go's
+# checkGenericStuckFinalizer end to end through a real incident, not just
+# the predicate unit tests.
+#
+# Fixture: a ConfigMap (in supportedGVKs, unlike Secret — see
+# internal/agent/tools.go) carrying a finalizer nothing was ever going to
+# clear, then deleted — leaving deletionTimestamp set but the object never
+# actually removed.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e14-row15-finalizer
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: e14-row15-cm
+  namespace: e14-row15-finalizer
+  finalizers:
+    - e14-test.argus.io/never-removed
+data:
+  note: "E14 row 15 fixture: this finalizer is never removed by any controller, so deletion sticks forever."
+
+# To induce the fault: kubectl delete configmap e14-row15-cm -n
+# e14-row15-finalizer --wait=false (the delete call sets deletionTimestamp
+# but the object persists, since nothing removes the finalizer above).
+
+# RESULT (2026-09-06): detected by checkGenericStuckFinalizer (reason
+# GenericStuckFinalizer) after the standard 10-minute
+# defaultSweepSustainedThreshold; medium severity, correctly computed by
+# stuckFinalizerSeverity for an age under 3x the threshold. Auto-analyzed
+# (confidence 1.00): correctly identified the exact finalizer, the exact
+# stuck duration, that the object is not GitOps-managed and has no owner
+# references, and that "the finalizer must be manually removed." NO PLAN
+# was proposed — correctly: no typed remediation action (ScaleDeployment,
+# RestartPod, PatchResourceLimits, RevertContainerImage, DeleteResource,
+# AnnotateResource, LabelResource, CreateResource, OpenPR) touches
+# metadata.finalizers, and removing one by patching it out is a real,
+# dangerous action nothing in the reviewed action set attempts. This is
+# the honest result this row's own brief anticipated, not a gap to route
+# around. Full narrative: docs/VERIFICATION.md, "Representative live
+# scenarios", "E14 row 15". Dismissed with a note; the finalizer was then
+# removed by hand (an operator action, not ARGUS's) so the object could
+# actually finish deleting, and the namespace was removed.

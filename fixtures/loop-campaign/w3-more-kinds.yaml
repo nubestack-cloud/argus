@@ -1,0 +1,138 @@
+# Loop campaign, wave 3 — more kinds and failure shapes (README.md).
+#
+#  S36 Init container that always fails       → Init:CrashLoopBackOff → incident
+#  S37 Liveness probe that kills a healthy container → restarts + Unhealthy (liveness) → incident
+#  S38 ConfigMap volume that does not exist    → FailedMount (configmap) → incident
+#  S39 Image from a private registry, no pull secret → ErrImagePull (auth) → incident
+#  S40 Node affinity no node satisfies         → FailedScheduling → incident
+#  S41 PriorityClass that does not exist       → FailedCreate on the ReplicaSet → incident
+#  S20 PVC in use, then deleted (w3 action)    → kubernetes.io/pvc-protection keeps it
+#      Terminating → persistentvolumeclaim-stuck-terminating
+#  S33 Argo CD Application whose path does not exist → ComparisonError →
+#      argo-application-out-of-sync / health rules (argocd namespace, destination argus-loop-test)
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s36-init-fails, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S36}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: s36-init-fails}}
+  template:
+    metadata: {labels: {app: s36-init-fails}}
+    spec:
+      initContainers:
+        - name: wait-for-db
+          image: busybox:1.36
+          command: ["sh", "-c", "echo 'db.argus-loop.svc: connection refused'; exit 1"]
+      containers:
+        - {name: app, image: busybox:1.36, command: ["sh", "-c", "sleep 3600"]}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s37-liveness-kills, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S37}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: s37-liveness-kills}}
+  template:
+    metadata: {labels: {app: s37-liveness-kills}}
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.27-alpine
+          livenessProbe:
+            httpGet: {path: /live, port: 80}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s38-missing-cm-volume, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S38}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: s38-missing-cm-volume}}
+  template:
+    metadata: {labels: {app: s38-missing-cm-volume}}
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+          volumeMounts: [{name: conf, mountPath: /etc/app}]
+      volumes: [{name: conf, configMap: {name: s38-app-config}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s39-private-image, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S39}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: s39-private-image}}
+  template:
+    metadata: {labels: {app: s39-private-image}}
+    spec:
+      containers:
+        - {name: app, image: "ghcr.io/argus-loop-campaign/private-api:1.0", command: ["sh", "-c", "sleep 3600"]}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s40-no-node-matches, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S40}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: s40-no-node-matches}}
+  template:
+    metadata: {labels: {app: s40-no-node-matches}}
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions: [{key: node.argus-loop/gpu, operator: In, values: ["a100"]}]
+      containers:
+        - {name: app, image: busybox:1.36, command: ["sh", "-c", "sleep 3600"]}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s41-missing-priorityclass, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S41}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: s41-missing-priorityclass}}
+  template:
+    metadata: {labels: {app: s41-missing-priorityclass}}
+    spec:
+      priorityClassName: argus-loop-critical-batch
+      containers:
+        - {name: app, image: busybox:1.36, command: ["sh", "-c", "sleep 3600"]}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: s20-scratch, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S20}}
+spec:
+  storageClassName: local-path
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 100Mi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s20-holds-pvc, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S20}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: s20-holds-pvc}}
+  template:
+    metadata: {labels: {app: s20-holds-pvc}}
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+          volumeMounts: [{name: scratch, mountPath: /scratch}]
+      volumes: [{name: scratch, persistentVolumeClaim: {claimName: s20-scratch}}]
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata: {name: argus-loop-s33, namespace: argocd, labels: {loop.argus.io/scenario: S33}}
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/argoproj/argocd-example-apps.git
+    targetRevision: HEAD
+    path: guestbook-renamed-away
+  destination: {server: https://kubernetes.default.svc, namespace: argus-loop-test}

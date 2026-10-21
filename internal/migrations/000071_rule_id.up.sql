@@ -1,0 +1,56 @@
+-- BACKLOG.md V3's prerequisite: a Finding produced by an E9 declarative rule
+-- (internal/agent/rules.go, migration-free — rules are agent-local config,
+-- not a table) carried DetectorID "k8s-sweep" (the shared sweep-detector id)
+-- and Reason (a per-rule display string, not guaranteed unique across rules
+-- — LoadRules only enforces uniqueness on Rule.ID) but never the rule's own
+-- ID. Without it, nothing hub-side can definitively say WHICH rule (if any)
+-- opened an incident, so there was nothing V3's synthetic post-fix health
+-- check could ask an agent to re-run.
+--
+-- tunnel.Finding grew a new optional RuleID field (agent-side, additive:
+-- empty for every Finding from the 13 hand-written Go checkers, the two
+-- watch-based detectors, or an agent predating this field). Two columns
+-- mirror it hub-side, following workload_key/opening_reason's exact
+-- precedent (migration 000042) rather than inventing a new shape:
+--
+--   findings.rule_id            The raw f.RuleID of EVERY finding this rule
+--                                produced, recorded on every row exactly like
+--                                reason/detector_id already are — not just
+--                                the one that happened to open an incident.
+--   incidents.opening_rule_id   The rule_id of the finding that opened this
+--                                incident — or, when that finding carried no
+--                                rule, of the first LATER correlated finding
+--                                that did. A finding from a DIFFERENT rule
+--                                never displaces a rule already recorded
+--                                here, so the invariant this column was
+--                                created for (a later finding must not
+--                                retroactively change which rule a post-fix
+--                                re-check re-runs) holds exactly as before;
+--                                what changed, on 2026-08-28, is that NULL
+--                                now means "no finding correlated into this
+--                                incident has EVER named a rule" rather than
+--                                "the first one to arrive didn't".
+--
+--                                CORRECTION (2026-08-28, BUGS.md 94): this
+--                                paragraph originally read "set ONCE at
+--                                creation and never updated afterward", which
+--                                was written before the correlation tier had
+--                                two producers. It does not survive contact
+--                                with E9's rules: a rule and a warning-event
+--                                detector fire on the same object routinely,
+--                                whichever arrives first is a meaningless
+--                                race, and losing that race left V3's
+--                                re-check (api.RuleStillFires, gated on this
+--                                column) permanently disabled for an incident
+--                                whose rule had demonstrably fired. Observed
+--                                live on rke2. internal/gateway/finding.go's
+--                                correlation branch now fills an empty slot;
+--                                see the comment on that UPDATE.
+--
+-- Both nullable: most incidents (every hand-written-detector Finding, every
+-- Finding from before this migration) have no rule to name, and NULL says
+-- so — an empty string would be indistinguishable from "the rule set an
+-- empty RuleID", which cannot happen but is not a distinction worth losing
+-- either way.
+ALTER TABLE findings ADD COLUMN rule_id text;
+ALTER TABLE incidents ADD COLUMN opening_rule_id text;

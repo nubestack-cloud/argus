@@ -1,0 +1,13 @@
+-- BACKLOG.md H4: nothing recorded when an incident actually closed.
+-- last_seen is the last FINDING recurrence, not the moment a human (or the
+-- validation sweeper) closed it, so it cannot stand in for this. Nullable,
+-- with no backfill: an incident already Resolved/Dismissed before this
+-- migration has no honest value to give it, and inventing one from
+-- last_seen would be exactly the fabricated-timestamp mistake this
+-- codebase's own conventions (README.md, the cost_usd honest-zero
+-- precedent) warn against. internal/orchestrator.SetState — the only
+-- function that ever writes incidents.state — sets this in the same
+-- statement whenever the new state is Resolved or Dismissed, so every
+-- closing path (manual resolve/dismiss, the validation sweeper's
+-- auto-resolve, a merge-sweeper transition) stamps it identically.
+ALTER TABLE incidents ADD COLUMN resolved_at timestamptz;

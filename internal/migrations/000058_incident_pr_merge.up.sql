@@ -1,0 +1,47 @@
+-- Closes the gap internal/orchestrator/state.go's own doc comment named:
+-- "lld/08 also specifies AwaitingMerge -> Validating on a merge webhook. That
+-- edge is deliberately absent: nothing in this build observes a merge... a
+-- person closes the incident." Nobody was watching, so an incident whose fix
+-- merged and even synced sat in AwaitingMerge forever unless a human noticed
+-- and closed it by hand — and if the same object broke again first, the new
+-- Finding correlated right back into the same still-open incident (correlation
+-- treats anything but Resolved/Dismissed as open) rather than either
+-- resolving cleanly or reopening on purpose.
+--
+-- internal/orchestrator.MergeSweeper polls each AwaitingMerge incident's
+-- provider for its pull request's status. Two columns, both nullable and
+-- both written exactly once, by that sweeper:
+--
+--   pr_number    the number to poll.
+--   pr_merged_at when the sweeper confirmed BOTH the provider reports the PR
+--                merged AND the GitOps controller's synced revision has
+--                caught up to the merge commit. Set once, at that moment —
+--                the clock ValidationSweeper's existing quiet-grace-period
+--                promotion (validation.go) now also starts from, exactly as
+--                it already starts from a successful execution's
+--                remediation_executions.executed_at. Not "merged", because a
+--                merge alone does not mean the workload changed yet — a PR
+--                merged but never converging is the specific failure this
+--                sweeper is verifying against, not just recording.
+--
+-- ON INCIDENTS, NOT remediation_recommendations
+--
+-- The obvious place is remediation_recommendations, next to
+-- superseded_at/superseded_by_url (migration 000049) — the OpenPR
+-- recommendation that got approved already has proposal.PullRequest.Number in
+-- hand at that moment. But a pull request can also open with NO recommendation
+-- row at all: POST /incidents/{id}/repository-change
+-- (internal/api/repository_change.go's handleOpenRepositoryChange) is the
+-- self-service "propose this as a pull request" path RepositoryChangePanel.tsx
+-- drives, and it runs on an un-analysed incident just as often as an analysed
+-- one — GITOPS_TEST_PLAN Phase 10's own finding was exactly an un-analysed
+-- incident reaching AwaitingMerge with zero rows in remediation_recommendations
+-- to attach anything to. AwaitingMerge is a property of the INCIDENT (there is
+-- a pull request pending, from whichever of the two routes opened it), so the
+-- column recording which one belongs on incidents, not on a table one of those
+-- two routes may never have written a row to.
+ALTER TABLE incidents ADD COLUMN pr_number int;
+ALTER TABLE incidents ADD COLUMN pr_merged_at timestamptz;
+
+-- No index: both are read by incident id (the primary key) for exactly one
+-- row.

@@ -1,0 +1,510 @@
+{{- if not (include "argus-agent.skip" .) }}
+# argus-investigate — cluster-wide, read-only. Transcribed verbatim from
+# lld/04-rbac-profiles.md §4, which is the authoritative source for this
+# resource/verb list; do not paraphrase or "improve" it here — update §4
+# first, then mirror the change into this file.
+#
+# This ClusterRole is intentionally NOT parameterized by any Helm value.
+# Unlike argus-remediate below (opt-in, see values.yaml's remediate.enabled)
+# or argus-dryrun (opt-in, templates/dryrun.yaml, see values.yaml's
+# dryRun.enabled), argus-investigate carries no opt-in packs and no
+# per-cluster variability: it is always present, and its rule set never
+# changes based on what a given cluster enables.
+#
+# Every rule below grants only get/list/watch (or, for the two rows marked
+# "inventory only", just get/list). There is no create/update/patch/delete
+# anywhere in this file, on any resource, by construction — per §4: "a
+# future PR that adds a write verb to it is a security regression, not a
+# feature." Review any future diff to this file with that in mind.
+#
+# Explicitly and permanently excluded (enforced by simply never granting
+# them — RBAC has no explicit "deny"), per §4's own list, restated here so
+# the exclusion is visible next to the grant, not just in the LLD:
+#   - secrets — every verb EXCEPT a single named "get" (BACKLOG.md "still
+#     open" #1, 2026-08-29, lld/04-rbac-profiles.md §4). list/watch remain
+#     permanently excluded — enumerating every Secret in a namespace is a
+#     strictly bigger exposure than a caller naming one it already suspects,
+#     and internal/agent/tools.go's list_resources refuses Secret outright
+#     rather than depend on this grant to fail closed. The single "get" this
+#     ClusterRole now holds is the one non-negotiable-9 exception this
+#     codebase makes, and it is narrowed twice over: describe_resource is
+#     the only tool that reaches it, and describe_resource's own
+#     secretMetadataOnly rebuilds the response from nothing but
+#     metadata+type — data/stringData are never marshaled, not even
+#     redacted, for this kind. See that function's doc comment for why this
+#     is a field-level omission rather than internal/redact's usual
+#     value-level substitution.
+#   - pods/exec, pods/attach, pods/portforward, nodes/proxy.
+#   - create, update, patch, delete on anything.
+#   - bind, escalate, impersonate on rbac.authorization.k8s.io;
+#     serviceaccounts/token; certificatesigningrequests/approval.
+#   - any verb on validatingadmissionpolicies, validatingwebhookconfigurations,
+#     mutatingwebhookconfigurations. roles/rolebindings/clusterroles/
+#     clusterrolebindings were also on this line until BACKLOG.md "still
+#     open" #1 (2026-08-29): they are now get/list/watch-readable (own rule
+#     below), which is not the escalation vector this line exists to close —
+#     bind/escalate/impersonate above is what actually grants an identity
+#     new permissions, and reading a Role/RoleBinding's own name/rules/
+#     subjects is ordinary investigative evidence (AC1's dangling
+#     RoleBinding subject, AJ1's "does this Role already exist" check).
+#     Nothing here can create, modify or bind one.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: argus-investigate
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [pods, events, services, configmaps, endpoints, persistentvolumeclaims, persistentvolumes, nodes, replicationcontrollers, resourcequotas]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list, watch]   # get: named lookups — kube-system's fingerprint (internal/agent/client.go's
+                                 # resolveFingerprint, lld/04-rbac-profiles.md §4) and, since BACKLOG.md R4, a
+                                 # remediation target's own namespace for the argus.io/protected guardrail
+                                 # (describe_resource, v1/Namespace). list/watch: added 2026-08-26 (BACKLOG.md
+                                 # E9, third pass, mirrored from lld/04-rbac-profiles.md §4) for
+                                 # internal/agent/rules.go's "namespace-stuck-terminating" rule, which has to
+                                 # enumerate Namespaces to find one stuck in Terminating — the one case so far
+                                 # where "not meant to be enumerable" (this comment's own prior wording) turned
+                                 # out to be narrower than a genuinely good rule needed. Namespace names/metadata
+                                 # are not Secret-shaped, so this does not weaken the actual sensitive exclusion
+                                 # below.
+  - apiGroups: ["apps"]
+    resources: [deployments, replicasets, statefulsets, daemonsets]
+    verbs: [get, list, watch]
+  - apiGroups: ["batch"]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch]
+  - apiGroups: ["networking.k8s.io"]
+    resources: [ingresses, networkpolicies]
+    verbs: [get, list, watch]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+  - apiGroups: ["autoscaling"]
+    resources: [horizontalpodautoscalers]
+    verbs: [get, list, watch]
+  - apiGroups: ["storage.k8s.io"]
+    resources: [storageclasses]
+    verbs: [get, list, watch]
+  # BACKLOG.md E9: PodDisruptionBudget — read by
+  # internal/agent/rules.go's "pdb-blocks-all-disruptions" default rule
+  # (status.disruptionsAllowed==0, sustained). Not covered by any pre-existing
+  # grant above — a genuinely new resource for this ClusterRole, unlike
+  # configmaps/networkpolicies/cronjobs/persistentvolumes below, which were
+  # already granted here for other reasons before E9.
+  - apiGroups: ["policy"]
+    resources: [poddisruptionbudgets]
+    verbs: [get, list, watch]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: [customresourcedefinitions]
+    # Read only. watch because the object cache syncs CRDs with an informer
+    # (the upgrade check reads their served versions); without it the kind
+    # shows as forbidden on the Agent tab.
+    verbs: [get, list, watch]
+  - apiGroups: ["argoproj.io"]
+    resources: [applications, applicationsets]
+    verbs: [get, list, watch]
+  - apiGroups: ["kustomize.toolkit.fluxcd.io", "helm.toolkit.fluxcd.io", "source.toolkit.fluxcd.io"]
+    resources: ["*"]
+    verbs: [get, list, watch]
+  # Rancher Fleet — the third GitOps controller, added for
+  # REMEDIATION_ROADMAP.md milestone 2.0. Read-only like the Argo and Flux
+  # grants above, and for the same reason: resolving which repo, path and
+  # PINNED commit an object came from means reading the controller's own
+  # object (Fleet's GitRepo carries spec.repo/branch/paths and, in
+  # status.commit, the resolved SHA). Narrower than the fluxcd grant on
+  # purpose — only the two kinds the ownership walk actually reads, not "*",
+  # since Fleet's group also contains cluster-registration and content
+  # objects an investigator has no business reading.
+  - apiGroups: ["fleet.cattle.io"]
+    resources: [gitrepos, bundles]
+    verbs: [get, list, watch]
+  # cert-manager's own CRD, added for BACKLOG.md E9's declarative rule format
+  # (internal/agent/rules.go's "certificate-expiry-imminent" default rule).
+  # Read-only, and Q1 already decided this needs no Secret access: this
+  # rule (and this ClusterRole) only ever reads the Certificate's own
+  # status.notAfter — never the Secret cert-manager stores the private
+  # key/cert material in, which stays exactly as unfetchable as every other
+  # Secret is to this ClusterRole (see this file's header comment).
+  - apiGroups: ["cert-manager.io"]
+    resources: [certificates]
+    verbs: [get, list, watch]
+  # cert-manager's renewal-chain CRDs (2026-10-13 parity review, PG5):
+  # CertificateRequest is in cert-manager's own group; Order/Challenge are
+  # in its acme.cert-manager.io sub-group. All three are public status
+  # objects (why a renewal is pending/failing), never the Secret the
+  # eventual certificate material lands in.
+  - apiGroups: ["cert-manager.io"]
+    resources: [certificaterequests]
+    verbs: [get, list, watch]
+  - apiGroups: ["acme.cert-manager.io"]
+    resources: [orders, challenges]
+    verbs: [get, list, watch]
+  # Traefik's own CRDs, added for the 2026-10-13 parity review's four
+  # IngressRoute/Middleware posture checks (internal/agent/posture).
+  # Read-only, and the checks only ever read spec (which Service/Middleware
+  # names a route or chain references) — never any credential-bearing field.
+  # A cluster without Traefik installed is tolerated the same way one
+  # without cert-manager or Velero is (the CRD simply never syncs).
+  - apiGroups: ["traefik.io"]
+    resources: [ingressroutes, middlewares]
+    verbs: [get, list, watch]
+  # Velero's own CRD, added 2026-08-26 (BACKLOG.md E9, third pass, mirrored
+  # from lld/04-rbac-profiles.md §4) for internal/agent/rules.go's
+  # "velero-backup-partially-failed" default rule (status.phase ==
+  # PartiallyFailed). Read-only, and only ever reads the Backup object's own
+  # status — this ClusterRole has no path to the object-storage credentials
+  # Velero uses or the backed-up data itself, neither of which is a
+  # Kubernetes API object. A cluster without Velero installed is tolerated
+  # the same way one without cert-manager is (evaluateRule's
+  # meta.IsNoMatchError handling) — this is an optional CRD, not assumed.
+  - apiGroups: ["velero.io"]
+    resources: [backups]
+    verbs: [get, list, watch]
+  # PROJECT.md PG20: batch and AI workload health (internal/agent/batch_ai.go).
+  # Read-only and status-only; each kind is optional.
+  - apiGroups: ["jobset.x-k8s.io"]
+    resources: [jobsets]
+    verbs: [get, list, watch]
+  - apiGroups: ["ray.io"]
+    resources: [rayjobs, rayservices, rayclusters]
+    verbs: [get, list, watch]
+  - apiGroups: ["serving.kserve.io"]
+    resources: [inferenceservices]
+    verbs: [get, list, watch]
+  - apiGroups: ["keda.sh"]
+    resources: [scaledobjects, scaledjobs]
+    verbs: [get, list, watch]
+  - apiGroups: ["kueue.x-k8s.io"]
+    resources: [workloads]
+    verbs: [get, list, watch]
+  # Velero's Restore CRD, added 2026-08-26 (BACKLOG.md E9, fourth pass,
+  # mirrored from lld/04-rbac-profiles.md §4) for
+  # "velero-restore-partially-failed"/"velero-restore-failed" — the same
+  # status.phase shape as Backup above, applied to Velero's restore-side
+  # object (a successful Backup says nothing about whether restoring from
+  # it works). Read-only, status-only, same "Velero optional" tolerance.
+  - apiGroups: ["velero.io"]
+    resources: [restores]
+    verbs: [get, list, watch]
+  # Schedules that stopped running (PROJECT.md IN8): a Velero Schedule's and a
+  # CloudNativePG ScheduledBackup's spec.schedule and last-run status. Both are
+  # optional CRDs, tolerated when absent; neither carries secret material.
+  - apiGroups: ["velero.io"]
+    resources: [schedules]
+    verbs: [get, list, watch]
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: [scheduledbackups]
+    verbs: [get, list, watch]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: [pods, nodes]
+    verbs: [get, list]
+  # BACKLOG.md "still open" #1 (2026-08-29): the RBAC kinds AC1/AJ1 both
+  # needed — a dangling RoleBinding subject the investigation loop hit
+  # "unsupported kind" on mid-trace (AC1), and a model that confidently told
+  # an operator to create a Role/RoleBinding that already existed because it
+  # had no way to check (AJ1). Read-only, and the escalation-relevant verbs
+  # (bind/escalate/impersonate) stay permanently excluded above — this is
+  # get/list/watch only, the same as every other rule in this file.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: [roles, rolebindings, clusterroles, clusterrolebindings]
+    verbs: [get, list, watch]
+  # ServiceAccount — read-only, same pass. Its own object is identity/
+  # metadata only (name, namespace, the token Secrets it references by
+  # name) — never the token itself, which stays exactly as unreachable as
+  # any other Secret content (see the secrets rule below).
+  - apiGroups: [""]
+    resources: [serviceaccounts]
+    verbs: [get, list, watch]
+  # ValidatingAdmissionPolicy — cluster-scoped, read-only (PROJECT.md B149).
+  # This object's own status.typeChecking field, populated by the API
+  # server itself, is how a CEL expression that cannot possibly match its
+  # own matched resource kind is detected generically — a failing policy
+  # blocks every write it guards, silently, with no Event and no watchable
+  # victim object. get/list/watch only, no bind/escalate/impersonate: this
+  # is reading a policy's own definition and status, not evaluating or
+  # granting it.
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: [validatingadmissionpolicies]
+    verbs: [get, list, watch]
+  # ValidatingWebhookConfiguration/MutatingWebhookConfiguration — cluster-
+  # scoped, read-only (PROJECT.md B149, webhook half). A registered webhook
+  # whose backing Service has no ready endpoint blocks (or, on
+  # failurePolicy=Ignore, silently skips) every write it guards, across
+  # every namespace and kind it matches — high blast radius, and nothing
+  # Kubernetes-native points back at the webhook as the cause. get/list/
+  # watch only: reading a webhook's own registered clientConfig, never
+  # calling it.
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: [validatingwebhookconfigurations, mutatingwebhookconfigurations]
+    verbs: [get, list, watch]
+  # Gateway API — gateway.networking.k8s.io. PROJECT.md's Gateway API item:
+  # 32 catalogue entries, 27 pull-request-fixable, every one keying on a
+  # plain status condition the existing generic predicates already read —
+  # no Gateway-specific detector, so the only change this kind family needs
+  # anywhere is this read grant plus supportedGVKs (internal/agent/tools.go).
+  # get/list/watch only, no bind/escalate/impersonate: reading a route's or
+  # gateway's own definition and status, never evaluating or routing traffic
+  # through it.
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: [gatewayclasses, gateways, httproutes, grpcroutes, tcproutes, tlsroutes, referencegrants]
+    verbs: [get, list, watch]
+  # Cluster insight (docs/CLUSTER_INSIGHT_SPECS.md) — read-only inputs for
+  # the object cache: LimitRanges and CSIDrivers for posture and upgrade
+  # readiness; IngressClasses for path tracing; APIServices for aggregated-API
+  # upgrade checks; PolicyReports (CI-S10); Karpenter NodePools/NodeClaims for
+  # scheduling explanation (CI-S9); PrometheusRules for upgrade readiness's
+  # renamed-metric check. None of these carries credentials.
+  - apiGroups: [""]
+    resources: [limitranges]
+    verbs: [get, list, watch]
+  - apiGroups: ["storage.k8s.io"]
+    resources: [csidrivers]
+    verbs: [get, list, watch]
+  - apiGroups: ["networking.k8s.io"]
+    resources: [ingressclasses]
+    verbs: [get, list, watch]
+  - apiGroups: ["apiregistration.k8s.io"]
+    resources: [apiservices]
+    verbs: [get, list, watch]
+  - apiGroups: ["wgpolicyk8s.io"]
+    resources: [policyreports, clusterpolicyreports]
+    verbs: [get, list, watch]
+  - apiGroups: ["karpenter.sh"]
+    resources: [nodepools, nodeclaims]
+    verbs: [get, list, watch]
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: [prometheusrules]
+    verbs: [get, list, watch]
+  # PriorityClass — cluster-scoped, read-only. Unblocks AE1's PRIO-001
+  # finding, which had no code path anywhere for this kind before this
+  # change.
+  - apiGroups: ["scheduling.k8s.io"]
+    resources: [priorityclasses]
+    verbs: [get, list, watch]
+  # CertificateSigningRequest — cluster-scoped, read-only. Unblocks W2's
+  # AUTH-004 finding. The approval subresource stays permanently excluded
+  # above (approving a CSR is a write with real trust consequences); this
+  # grants only the ability to read a CSR's own status.
+  - apiGroups: ["certificates.k8s.io"]
+    resources: [certificatesigningrequests]
+    verbs: [get, list, watch]
+  # ServiceMonitor — the Prometheus Operator's CRD, added the same way
+  # Velero's Backup/Restore and cert-manager's Certificate were: read-only,
+  # tolerates the CRD not being installed. Unblocks AD1's OBS-005 finding.
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: [servicemonitors]
+    verbs: [get, list, watch]
+  # Secret — unblocks AT1, and is deliberately the narrowest grant in this
+  # entire file: "get" ONLY, never list/watch. See this file's header
+  # comment (the "Explicitly and permanently excluded" section) for the full
+  # reasoning — in short, a single named lookup is a materially smaller
+  # exposure than enumerating every Secret in a namespace, and
+  # internal/agent/tools.go's describe_resource is the only code path that
+  # ever uses this grant, returning metadata+type only (never data/
+  # stringData, not even redacted). This is the one deliberate, narrowly-
+  # scoped exception to this ClusterRole's prior "no Secret access, ever"
+  # posture (non-negotiable 9) — reviewed and accepted as part of
+  # BACKLOG.md "still open" #1 (2026-08-29), not a silent widening.
+  # Second consumer (lld/14-adrs.md D-R12): Helm release status reads
+  # sh.helm.release.v1.* Secrets by exact name and keeps LABELS ONLY
+  # (internal/agent/tools_certs_helm.go helmSecretMeta); the payload is
+  # discarded in the same function and never returned.
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+{{- if .Values.remediate.enabled }}
+---
+# argus-remediate — lld/04-rbac-profiles.md §7.1's workload-recovery pack,
+# transcribed verbatim (this chart's only enabled pack today — see
+# values.yaml's header comment). Maps to §7.1's scaleWorkload/restartWorkload
+# actions plus the two patchResource-shaped container changes
+# (internal/agent/tools.go's scale_deployment/restart_pod/
+# patch_resource_limits/revert_container_image) — get to read the object being
+# patched, patch/update
+# for the strategic-merge Patch itself.
+#
+# ReplicaSets stay READ-ONLY here, and that read is now load-bearing rather
+# than incidental: revert_container_image lists the target Deployment's owned
+# ReplicaSets and refuses unless the image it was asked to write already
+# appears in one of them, which is what stops a compromised hub from naming an
+# arbitrary image (see that function's doc comment). Read-only is exactly the
+# right shape for it — the check needs to observe the rollout history, never to
+# alter it, and a ReplicaSet is the Deployment controller's to write.
+#
+# patch_resource_limits and revert_container_image each needed no new verb and
+# no new resource here: both are a
+# patch against the same deployments/statefulsets the other two already
+# patch. That is precisely why templates/validatingadmissionpolicy.yaml had to
+# be widened deliberately and narrowly for each — RBAC cannot express "may patch
+# a container's memory limit but not its image", let alone "may set an image
+# this workload already ran but no other", so nothing about this file
+# changes when the set of permitted FIELDS does, and nothing here would have
+# failed if that policy had been widened carelessly.
+#
+# By itself this ClusterRole would permit rewriting far more than replica
+# count or a template annotation (a container's image, security context,
+# volumes...) — templates/validatingadmissionpolicy.yaml's field restriction
+# is what actually closes that gap, per §7.1's own explicit callout: "do not
+# deploy this ClusterRole without it."
+{{- if and (not .Values.remediate.allNamespaces) (not .Values.remediate.namespaces) }}
+{{- fail "remediate.enabled is true but neither remediate.namespaces nor remediate.allNamespaces is set. Set remediate.namespaces to the namespaces ARGUS may act in (preferred), or remediate.allNamespaces=true to grant cluster-wide write. The chart refuses to guess: an empty grant fails at execution time with a confusing RBAC error, and a cluster-wide default would silently include kube-system." }}
+{{- end }}
+{{- if and .Values.remediate.allNamespaces .Values.remediate.namespaces }}
+{{- fail "remediate.namespaces and remediate.allNamespaces are both set. Pick one — a namespace list next to a cluster-wide grant reads as a restriction while granting everything, which is the most dangerous kind of wrong." }}
+{{- end }}
+{{- if .Values.remediate.allNamespaces }}
+# CLUSTER-WIDE write. Opt-in only, and deliberately not the default.
+#
+# lld/04-rbac-profiles.md §8 specifies namespace-scoped by default, and §9's
+# privilege table calls this shape "the one configuration where this table's
+# namespace-scoping arguments weaken". It is here because some fleets genuinely
+# cannot enumerate their namespaces up front — not because it is a reasonable
+# starting point. The narrower Role-per-namespace shape lives in
+# templates/remediate-role.yaml and is what you get by setting
+# remediate.namespaces.
+#
+# Concretely, what this grants that the namespaced shape does not: write access
+# to every Deployment and StatefulSet in kube-system, kube-public, and every
+# namespace created after this chart was installed. The
+# ValidatingAdmissionPolicy still restricts which FIELDS may change, and
+# internal/remediation/risk.go still raises the risk floor for protected
+# namespaces — but a risk floor is something a human can approve straight
+# past, and a field restriction says nothing about where.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: argus-remediate
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: [deployments, statefulsets]
+    verbs: [get, patch, update]
+  # replicasets read is load-bearing, not incidental: revert_container_image
+  # resolves the previous revision's image from the target's own owned
+  # ReplicaSets, and refuses to write any image it cannot find there. Removing
+  # this read does not make the action safer, it makes it fail closed.
+  - apiGroups: ["apps"]
+    resources: [replicasets]
+    verbs: [get, list, watch]
+  # Service, Ingress, HorizontalPodAutoscaler, PodDisruptionBudget, CronJob —
+  # closes BACKLOG.md "still open" #9 (2026-08-29), the RBAC precondition on
+  # in-place patching that `F11`'s decision does not cover. `Z1`'s `ING-004`
+  # confirmed this live: internal/remediation/patchfield.go's allowlist already
+  # reviews and permits 13 field paths on these five kinds (Service's
+  # targetPort/port/selector, Ingress's backend service name/port/
+  # ingressClassName, HPA's min/maxReplicas, PDB's min/maxAvailable, CronJob's
+  # schedule/startingDeadlineSeconds/concurrencyPolicy) — but every one of
+  # those rows carried a NeedsGrant note refusing it up front, because even
+  # with `F11` reversed tomorrow a human would approve a plan and then watch
+  # the API server refuse it with a 403. The rows below are what patchfield.go
+  # named as missing, kind by kind — see that file's own (now-removed)
+  # NeedsGrant strings for the exact wording this was reviewed against.
+  #
+  # get/list/watch on all five already reach this identity through
+  # clusterrolebinding.yaml's union-of-roles binding to argus-investigate
+  # above (services, ingresses/networkpolicies, horizontalpodautoscalers,
+  # poddisruptionbudgets and jobs/cronjobs are all already read there) — patch
+  # is the only verb genuinely new. PodDisruptionBudget repeats get/list/watch
+  # here anyway, so this ClusterRole names everything the remediate identity
+  # can do to a PDB in one place, the same "kubectl get rolebindings -A"
+  # auditability argument templates/remediate-role.yaml's own header makes —
+  # even though the base argus-investigate ClusterRole already grants that
+  # same read for its own (E9) reason.
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [patch]
+  - apiGroups: ["networking.k8s.io"]
+    resources: [ingresses]
+    verbs: [patch]
+  - apiGroups: ["autoscaling"]
+    resources: [horizontalpodautoscalers]
+    verbs: [patch]
+  - apiGroups: ["policy"]
+    resources: [poddisruptionbudgets]
+    verbs: [get, list, watch, patch]
+  - apiGroups: ["batch"]
+    resources: [cronjobs]
+    verbs: [patch]
+  # GitOps quick actions (docs/CLUSTER_INSIGHT_SPECS.md CI-S15): patch, held
+  # to exactly two annotation keys — argocd.argoproj.io/refresh and
+  # reconcile.fluxcd.io/requestedAt — by the
+  # argus-remediate-gitops-reconcile-only admission policy. Asking a
+  # controller to act now changes no desired state.
+  - apiGroups: ["argoproj.io"]
+    resources: [applications]
+    verbs: [get, patch]
+  - apiGroups: ["kustomize.toolkit.fluxcd.io", "helm.toolkit.fluxcd.io", "source.toolkit.fluxcd.io"]
+    resources: [kustomizations, helmreleases, gitrepositories, helmrepositories, ocirepositories]
+    verbs: [get, patch]
+  # Pod, Job, PersistentVolumeClaim — BACKLOG.md F9's deleteResource action
+  # type. `delete` is a genuinely new verb: nothing above it in this file, or
+  # in argus-investigate's own ClusterRole, ever grants delete on anything
+  # (this file's own header rule for argus-investigate; the analogous rule
+  # for this write pack is that it grants exactly get/patch/update, never
+  # delete or create, until now). get/list/watch on all three kinds already
+  # reach this identity through clusterrolebinding.yaml's union-of-roles
+  # binding to argus-investigate above — delete is the only verb genuinely
+  # new here, same shape as the Service/Ingress/HPA/PDB/CronJob rows above
+  # where only patch was new.
+  #
+  # Deliberately narrow: internal/remediation/deleteresource.go's own
+  # allowlist permits ONLY these three kinds — a Pod stuck Terminating or
+  # orphaned; a stale Job blocking a CronJob's next Forbid-policy run; and
+  # (added 2026-09-01, BUGS.md 118 part (b), an explicit owner decision) a
+  # PersistentVolumeClaim narrowly scoped to the orphaned/unreferenced case
+  # that allowlist entry's own Why describes, re-checked live at execution
+  # time by internal/agent/deleteresource.go and internal/api/
+  # remediation_exec.go — never StatefulSet/Namespace/CustomResourceDefinition,
+  # so this ClusterRole grants delete on nothing that action type's own
+  # Go-side allowlist would ever refuse to name in the first place. See
+  # deploy/helm/argus-agent/templates/validatingadmissionpolicy.yaml's
+  # argus-remediate-delete-protected-resources policy for the admission-time
+  # backstop this RBAC grant sits above — that policy's own matchConstraints
+  # were widened alongside this grant, for the same reason: an RBAC grant
+  # with no matching admission rule would let a PVC delete sail past the
+  # one backstop meant to catch a protected-namespace/tier=data target
+  # regardless of what internal/remediation/risk.go computes.
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [delete]
+  - apiGroups: ["batch"]
+    resources: [jobs]
+    verbs: [delete]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [delete]
+  # ConfigMap — BACKLOG.md F9's createResource action type. `create` is a
+  # genuinely new verb, and the one this task's own brief calls out
+  # explicitly: nothing anywhere in this chart, for either identity, ever
+  # granted `create` on anything before this. Deliberately as narrow as the
+  # allowlist that authorises it: internal/remediation/createresource.go's
+  # own table permits ONLY ConfigMap — never Secret (non-negotiable 9 keeps
+  # Secret values out of every prompt a model sees; a model must never be
+  # trusted to author one either), never a workload kind (Pod/Job need a
+  # controller to own them or orphan immediately) — so this ClusterRole
+  # grants create on nothing that action type's own Go-side allowlist would
+  # ever refuse to name in the first place, the identical shape the Pod/Job
+  # delete grant above already follows. get/list/watch on configmaps already
+  # reach this identity through clusterrolebinding.yaml's union-of-roles
+  # binding to argus-investigate above (configmaps is in that ClusterRole's
+  # own broad read list) — used by create_resource's own Get-before-Create
+  # existence check (internal/agent/createresource.go) and by preparePlan's
+  # pre-signing absence check (internal/api/remediation_exec.go's
+  # confirmTargetAbsentForCreate) — so `create` is the only verb genuinely
+  # new here. See deploy/helm/argus-agent/templates/
+  # validatingadmissionpolicy.yaml's argus-remediate-create-protected-targets
+  # policy for the admission-time backstop this RBAC grant sits above.
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create]
+{{- end }}
+{{- end }}
+{{- end }}

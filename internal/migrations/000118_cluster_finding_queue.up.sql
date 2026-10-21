@@ -1,0 +1,41 @@
+-- clusters.finding_queue_* — what one agent's finding queue reported on its
+-- most recent heartbeat (tunnel.Heartbeat.FindingQueue).
+--
+-- The gap this closes is PROJECT.md B176's recorded residual. B176 bounded the
+-- agent's finding queue at 5,000 distinct pending fingerprints and made the
+-- discard at that bound loud — it names the object, the reason and a running
+-- total in the agent's log. Loud in a pod log that nobody is tailing reaches
+-- nobody: the hub's view of a cluster that had been dropping findings for an
+-- hour was identical to its view of a cluster with nothing to report, which is
+-- the same "a quiet cluster is ambiguous" problem T13's detector health exists
+-- to solve, one layer further out.
+--
+-- ON CLUSTERS, not cluster_facts: this arrives on the Heartbeat (every 30s,
+-- always, on the one channel that is up whenever the agent is) rather than in
+-- the ClusterFacts payload, deliberately — an agent whose queue is overflowing
+-- is under exactly the load that makes a facts gather slow or time out, so
+-- hanging this signal off the slower, more failure-prone message would make it
+-- least available when it matters most. handleHeartbeat already UPDATEs this
+-- row every 30s, so these three columns cost that statement three more
+-- assignments and no extra round trip.
+--
+-- ALL THREE NULLABLE, and null means "this agent did not report it" — an agent
+-- build older than tunnel.Heartbeat.FindingQueue, or a cluster that has not
+-- heartbeated since this column existed. It does NOT mean zero. "This agent has
+-- never dropped a finding" and "this agent cannot tell us" are different
+-- answers and a reader must render them differently; substituting 0 here would
+-- be exactly the fabricated zero this codebase refuses for a missing cost or a
+-- trimmed count.
+ALTER TABLE clusters ADD COLUMN finding_queue_pending integer;
+ALTER TABLE clusters ADD COLUMN finding_queue_dropped integer;
+ALTER TABLE clusters ADD COLUMN finding_queue_capacity integer;
+
+-- No backfill is possible or meaningful: these are an agent's own in-memory
+-- counters, reset by every agent restart, and no hub-side record of them
+-- exists before this migration. Every row starts null and becomes real on the
+-- cluster's next heartbeat from an agent that reports it.
+--
+-- No index: read by cluster id (the primary key) on the cluster detail route,
+-- and as a plain projection in the diagnostics bundle's bounded scan over the
+-- cluster list — the same access shape as agent_version and last_heartbeat_at
+-- beside them.

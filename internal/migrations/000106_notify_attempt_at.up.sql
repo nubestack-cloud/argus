@@ -1,0 +1,43 @@
+-- PROJECT.md B166: internal/notify used to POST the webhook from INSIDE the
+-- transaction that selected the work and marked it done, so a slow receiver
+-- held a Postgres transaction for the length of an outbound HTTP call and a
+-- receiver that blackholes connections could pin one for the client's whole
+-- 10s timeout, twenty rows at a time. Delivery now happens with no
+-- transaction open at all, which means the "this row is being delivered right
+-- now" fact can no longer live in an uncommitted transaction's locks. These
+-- two columns are where it lives instead.
+--
+-- notify_attempt_at is the INTENT record, and it is deliberately a separate
+-- column from the delivered marker (incidents.notified_at,
+-- incident_notifications.pending/notified_at) rather than an early write to
+-- it. That separation is the whole safety property: a hub that dies between
+-- committing the intent and hearing back from the receiver leaves a row that
+-- says "attempted, outcome unknown" — never one that says "delivered" — so
+-- the notification is retried rather than silently dropped. Marking the row
+-- notified up front would have been simpler and would have lost exactly the
+-- notifications that matter most (the ones sent while the hub was unhealthy).
+--
+-- The three states a queued notification can now be in:
+--
+--   notified_at IS NULL, notify_attempt_at IS NULL  -> queued, never tried
+--   notified_at IS NULL, notify_attempt_at IS NOT NULL -> a delivery is in
+--       flight right now, OR the hub died mid-delivery. Indistinguishable on
+--       purpose: both are answered the same way, by retrying once the claim
+--       has aged past notify.notifyAttemptLease.
+--   notified_at IS NOT NULL -> delivered, terminal.
+--
+-- A failed POST does not leave its claim behind: internal/notify's outcome
+-- write RELEASES it (sets this column back to NULL), so an ordinary webhook
+-- outage still retries on the very next 30s tick exactly as it did before
+-- this change. The lease window therefore only ever governs the crash case,
+-- which is why it can be long (see notifyAttemptLease's own comment) without
+-- making ordinary retries slow.
+--
+-- No new RLS policy needed for either: both are plain columns on existing
+-- tables whose policies (migration 000009's generic cluster_id-scoped loop
+-- plus 000013's additive tenant_id-keyed policy for incidents; migration
+-- 000083's own pair for incident_notifications) already cover every row
+-- regardless of column set — the same reasoning migration 000017 recorded
+-- when it added incidents.notified_at itself.
+ALTER TABLE incidents ADD COLUMN notify_attempt_at timestamptz;
+ALTER TABLE incident_notifications ADD COLUMN notify_attempt_at timestamptz;

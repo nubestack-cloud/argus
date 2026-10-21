@@ -2117,12 +2117,21 @@ const staleCandidateQuery = `
 	 ORDER BY i.last_seen ASC
 	 LIMIT $2`
 
+// subjectGoneCloses reports whether an incident is closed when the object it
+// is about (its workload, or the object itself when it has none) is gone. Only
+// AwaitingApproval reaches that question here: every other state was already
+// closed by the gone check, which AwaitingApproval skips because its plan's
+// target is a pod a rollout replaces.
+func subjectGoneCloses(state string) bool {
+	return state == orchestrator.StateAwaitingApproval
+}
+
 // awaitingApprovalCandidateQuery selects incidents waiting on an approval
 // that have been quiet for the grace period, with no pull request open. They
-// are never closed because an object went away (a plan's target is usually a
-// pod, replaced by every rollout); only by the cleared check, on the health
-// of the workload the incident is about (cleared.go). Same columns as
-// staleCandidateQuery.
+// are never closed because a plan's target pod went away (a rollout replaces
+// it); only by the health of the workload the incident is about (cleared.go),
+// or because that workload, or the object itself when it has none, is gone.
+// Same columns as staleCandidateQuery.
 const awaitingApprovalCandidateQuery = `
 	SELECT i.id, i.cluster_id, COALESCE(i.object_key, ''), i.state,
 	       COALESCE(i.workload_key, ''), '', i.last_seen
@@ -2201,9 +2210,19 @@ func (p *Poller) sweepStaleObjects(ctx context.Context) error {
 		healthKey, healthKind := clearedTarget(c)
 		if healthKey != target || object == nil {
 			var gone bool
-			object, gone, _ = p.readTarget(ctx, c.ClusterID, healthKey)
+			var reason string
+			object, gone, reason = p.readTarget(ctx, c.ClusterID, healthKey)
 			if gone {
-				continue // a gone workload is the gone check's call, not this one's
+				// Every other state already went through the gone check above.
+				// An AwaitingApproval incident skipped it, because its plan's
+				// target is usually a pod a rollout replaces; but this is the
+				// workload it is about, or the object itself when it has none
+				// (a bare Pod). With that gone there is nothing left for the
+				// plan to act on, and the question it asks is moot.
+				if subjectGoneCloses(c.State) {
+					p.closeStaleIncident(ctx, c, fmt.Sprintf("%s (%s)", reason, healthKind), nil)
+				}
+				continue
 			}
 		}
 		if object != nil && liveVerdict(healthKey, object, time.Now()).Level != health.LevelUnknown {

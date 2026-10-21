@@ -220,3 +220,17 @@ func TestPeriodicClearedOutcomeSaysWhatWasReRun(t *testing.T) {
 		t.Fatalf("closure = %+v", got)
 	}
 }
+
+// A pending approval whose subject is gone closes: a deleted bare Pod, or a
+// deleted Deployment, leaves the plan nothing to act on. Every other state
+// was decided by the gone check before this point.
+func TestSubjectGoneClosesOnlyPendingApprovals(t *testing.T) {
+	if !subjectGoneCloses(orchestrator.StateAwaitingApproval) {
+		t.Error("an AwaitingApproval incident whose workload or bare object is gone must close")
+	}
+	for _, s := range []string{orchestrator.StateDetected, orchestrator.StateDiagnosed, orchestrator.StateAwaitingMerge, orchestrator.StateExecuting, orchestrator.StateValidating} {
+		if subjectGoneCloses(s) {
+			t.Errorf("%s must not be closed here", s)
+		}
+	}
+}

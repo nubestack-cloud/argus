@@ -56,6 +56,27 @@ See [Upgrading to 0.2.0](docs/INSTALL.md#upgrading-from-a-release-before-020) fo
 
 ### Fixed
 
+- **Metrics, traffic and cost connect by themselves.** The agent chart finds a Prometheus the
+  cluster already runs (Rancher monitoring, kube-prometheus-stack, a Prometheus server, a Thanos
+  query, a VictoriaMetrics single node) at install and upgrade, by the same rules the Traffic tab
+  uses to suggest one, and the install notes name it. `metrics.prometheusService` still chooses
+  one, and `metrics.autoDetect=false` turns it off.
+- **The charts install on any conformant Kubernetes without cluster-specific settings.** On
+  OpenShift (detected, or `global.openshift=true`) the pods leave their user and group IDs for the
+  cluster to assign, as its restricted policy requires. With no default IngressClass the hub's
+  Ingress uses one of the cluster's, and with none at all the install notes say so. Remediation and
+  dry runs refuse a cluster older than 1.30 with a plain message, since their admission policies
+  need it; a read-only agent still installs on 1.29.
+- **A refused Analyze no longer shifts the incident header.** The reason floats under the button and
+  can be dismissed. With no AI provider set up it says so in plain words, with a link to set one
+  up for people who can. The Overview no longer shows a setup card that could not be put away:
+  choosing an AI provider is a step in the top bar's setup guide.
+- **The agent can read the whole cluster by default** (`read.allApiGroups`): get, list and watch on
+  every API group the cluster serves, CRDs included, plus CRDs added later that grant read to the
+  built-in `view` role. Before, it read only a fixed list of kinds. Still never Secret contents,
+  `pods/exec`, `attach`, `port-forward` or `*/proxy`, and never a write. A few groups whose reads
+  amount to credentials or sessions are left out (`read.excludeApiGroups`); a CRD added later
+  without that label becomes readable at the agent's next `helm upgrade`.
 - **The install works on a cluster with no default StorageClass.** The bundled database's volume
   uses the cluster default, else one of the cluster's StorageClasses, instead of waiting forever
   for a volume nothing would create. With no StorageClass at all the database runs on a temporary

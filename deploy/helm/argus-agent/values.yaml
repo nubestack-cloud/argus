@@ -80,6 +80,28 @@ cost:
 selfUpgrade:
   enabled: false
 
+# What argus-investigate may read: by default the whole cluster, read-only
+# (get, list, watch). That is every API group the cluster serves when the chart
+# is installed or upgraded, built-in kinds and CRDs alike, plus any CRD added
+# later that grants read to the built-in "view" role
+# (rbac.authorization.k8s.io/aggregate-to-view). Never Secret contents,
+# pods/exec, attach or port-forward, or a proxy subresource: the core API
+# group, where those live, is always granted kind by kind.
+read:
+  allApiGroups: true
+  # Left out of allApiGroups because reading them is as good as holding a
+  # credential or an interactive session. Anything ARGUS itself needs from
+  # these groups is granted explicitly. Add your own.
+  excludeApiGroups:
+    - management.cattle.io      # Rancher: API tokens, users, auth configs
+    - ext.cattle.io             # Rancher: tokens
+    - token.cattle.io           # Rancher: tokens
+    - oauth.openshift.io        # OpenShift: OAuth access tokens
+    - image.openshift.io        # OpenShift: imagestreams/secrets returns pull secrets
+    - subresources.kubevirt.io  # KubeVirt: console and VNC over GET
+    - upload.cdi.kubevirt.io    # KubeVirt CDI: upload tokens
+    - tap.linkerd.io            # Linkerd: live request tap
+
 remediate:
   # Opt-in, per cluster: executes approved remediation plans. Adds the
   # argus-remediate Deployment; the investigation agent stays read-only.
@@ -175,11 +197,18 @@ helmStatus:
   enabled: true
 
 metrics:
-  # Opt-in, per cluster: the query_metrics investigation tool. Not another
-  # identity: argus-investigate gains `get` on the proxy subresource of the
-  # one Prometheus Service named below, so the API server proxies the query
-  # and the agent needs no network route to Prometheus. Leave it empty and
-  # query_metrics is simply unavailable.
+  # Workload metrics, traffic and cost, from a Prometheus the cluster already
+  # runs. Not another identity: argus-investigate gains `get` on the proxy
+  # subresource of that one Prometheus Service, so the API server proxies the
+  # query and the agent needs no network route to Prometheus.
+  #
+  # autoDetect (the default) finds one at install and upgrade, by the same
+  # rules the Traffic tab uses to suggest one: a Prometheus server (Rancher
+  # monitoring, kube-prometheus-stack, prometheus-operated, ...), else a
+  # Thanos query, else a VictoriaMetrics single node. prometheusService or
+  # external below, when set, are used instead; autoDetect=false with neither
+  # leaves metrics off.
+  autoDetect: true
   #
   # external: a Prometheus-compatible endpoint that is not a Service in this
   # cluster (a managed or central Prometheus, Thanos, Mimir, VictoriaMetrics).
@@ -364,6 +393,12 @@ resources:
     cpu: 500m
     memory: 1Gi
 
+# OpenShift's restricted security policy assigns pods their user and group
+# IDs and refuses fixed ones. auto (the default) detects OpenShift and then
+# leaves runAsUser, runAsGroup and fsGroup out of every pod; true or false
+# forces it either way. global.openshift does the same for this chart and,
+# on the hub, the agent it installs.
+openshift: auto
 nodeSelector: {}
 tolerations: []
 affinity: {}

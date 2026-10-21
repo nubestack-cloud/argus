@@ -2,7 +2,8 @@
 {{- if and (or .Values.metrics.prometheusService.namespace .Values.metrics.prometheusService.name) (not (and .Values.metrics.prometheusService.namespace .Values.metrics.prometheusService.name)) }}
 {{- fail "metrics.prometheusService.namespace and metrics.prometheusService.name must be set TOGETHER (or both left empty to leave query_metrics disabled) — the chart refuses to guess which one you forgot, the same discipline remediate.enabled's own namespaces/allNamespaces check applies." }}
 {{- end }}
-{{- if and .Values.metrics.prometheusService.namespace .Values.metrics.prometheusService.name }}
+{{- $prom := include "argus-agent.prometheusService" . | fromJson }}
+{{- if $prom.name }}
 # argus-investigate-metrics — BACKLOG.md C4's query_metrics half.
 #
 # Unlike dryrun.yaml/policycontroller.yaml, this does NOT create a second
@@ -27,7 +28,7 @@
 # restriction narrows WHICH object within a resource type, never WHICH
 # namespace — a ClusterRole entry with resourceNames: [<name>] would still
 # match a same-named Service in every other namespace in the cluster. Binding
-# a namespace-scoped Role in exactly metrics.prometheusService.namespace is
+# a namespace-scoped Role in exactly the Prometheus Service's namespace is
 # what actually confines the grant to the one Service an operator configured,
 # the identical reasoning templates/remediate-role.yaml's own header gives
 # for preferring a namespaced Role over a cluster-wide grant.
@@ -35,7 +36,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: argus-investigate-metrics
-  namespace: {{ .Values.metrics.prometheusService.namespace }}
+  namespace: {{ $prom.namespace }}
   labels:
     {{- include "argus-agent.labels" . | nindent 4 }}
 rules:
@@ -46,14 +47,14 @@ rules:
     # (internal/agent/metrics_client.go), and RBAC matches resourceNames
     # against that whole string, so the bare name alone grants nothing.
     resourceNames:
-      - {{ .Values.metrics.prometheusService.name | quote }}
-      - {{ printf "%s:%v" .Values.metrics.prometheusService.name .Values.metrics.prometheusService.port | quote }}
+      - {{ $prom.name | quote }}
+      - {{ printf "%s:%v" $prom.name (int $prom.port) | quote }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: argus-investigate-metrics
-  namespace: {{ .Values.metrics.prometheusService.namespace }}
+  namespace: {{ $prom.namespace }}
   labels:
     {{- include "argus-agent.labels" . | nindent 4 }}
 subjects:

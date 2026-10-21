@@ -15,8 +15,10 @@ helm install argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --ve
 
 `ingress.host` is the only value an install needs. Drop `ingress.clusterIssuer` if you do not use
 cert-manager, and set `ingress.tls.enabled=true` with `ingress.tls.secretName` naming an existing
-certificate Secret instead (or leave TLS off for a lab). Set `ingress.className` if the cluster has
-more than one ingress controller.
+certificate Secret instead (or leave TLS off for a lab). The IngressClass and the database's
+StorageClass default to the cluster's defaults, or one of its classes when none is marked default;
+`ingress.className` and `postgres.bundled.persistence.storageClass` choose. On OpenShift (detected,
+or `global.openshift=true`) the pods leave their user IDs for the cluster to assign.
 
 **Gateway API instead of Ingress:** set `httpRoute.host` and `httpRoute.parentRefs` (your Gateway)
 instead of `ingress.host`; the chart then creates an HTTPRoute for the UI, the API and the agent

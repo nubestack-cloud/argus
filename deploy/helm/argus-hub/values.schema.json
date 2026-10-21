@@ -665,6 +665,15 @@
     "podAnnotations": {
       "type": "object"
     },
+    "openshift": {
+      "enum": [
+        "auto",
+        true,
+        false,
+        "true",
+        "false"
+      ]
+    },
     "podSecurityContext": {
       "type": "object"
     },

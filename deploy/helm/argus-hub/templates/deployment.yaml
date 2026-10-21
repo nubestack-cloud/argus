@@ -30,7 +30,7 @@ spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets: {{- toYaml . | nindent 8 }}
       {{- end }}
-      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      securityContext: {{- toYaml (ternary (omit .Values.podSecurityContext "runAsUser" "runAsGroup" "fsGroup") .Values.podSecurityContext (eq (include "argus-hub.openshift" .) "true")) | nindent 8 }}
       # Derived, not hardcoded (PROJECT.md B162): the hub's drain is
       # readinessDelay + one graceSeconds budget for the HTTP phase + one for
       # the worker phase, plus five 5s constants cmd/hub/main.go spends on

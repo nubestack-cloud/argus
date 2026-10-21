@@ -69,7 +69,7 @@ The agent has two modes.
 
 | Mode | Default? | Permissions |
 |---|---:|---|
-| Investigate | Yes | Read-only Kubernetes access; no Secrets and no exec |
+| Investigate | Yes | Read-only access to the whole cluster, CRDs included; no Secret contents, no exec, no proxy |
 | Remediate | No | Narrow write access, only when enabled in the agent chart |
 
 Read-only mode is enough for detection, triage, and most investigation. Remediation requires an

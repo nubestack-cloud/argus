@@ -257,3 +257,90 @@ true
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+"true" on OpenShift, where the restricted security policy assigns each pod a
+user and group from the namespace's range and refuses fixed ones: every pod
+then leaves runAsUser, runAsGroup and fsGroup out and keeps the rest of its
+security context. `openshift: auto` (the default) detects it from the
+security.openshift.io API; true or false forces it. global.openshift, when
+set, wins, so one setting reaches the hub and the agent it installs.
+*/}}
+{{- define "argus-agent.openshift" -}}
+{{- $v := toString (dig "openshift" .Values.openshift (.Values.global | default dict)) -}}
+{{- if or (eq $v "true") (and (has $v (list "auto" "" "<nil>")) (.Capabilities.APIVersions.Has "security.openshift.io/v1")) -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+The Prometheus Service query_metrics uses, as JSON {namespace, name, port,
+source}, or {} for none. metrics.prometheusService wins when set; otherwise,
+with metrics.autoDetect (the default) and no metrics.external.url, the chart
+looks the cluster's Services up at install and upgrade and picks one by the
+agent's own rules (internal/agent/tools_insight_more.go's
+detectMetricsService), so it connects the Service the Traffic tab would have
+suggested: a Prometheus server, a Thanos query or a VictoriaMetrics single
+node, never an exporter, operator or Alertmanager. Under `helm template` or a
+client dry run there is no cluster to look at, and nothing is detected.
+*/}}
+{{- define "argus-agent.prometheusService" -}}
+{{- $m := .Values.metrics -}}
+{{- if and $m.prometheusService.namespace $m.prometheusService.name -}}
+{{- dict "namespace" $m.prometheusService.namespace "name" $m.prometheusService.name "port" (int $m.prometheusService.port) "source" "set" | toJson -}}
+{{- else if or $m.external.url (not $m.autoDetect) (not (lookup "v1" "Namespace" "" "kube-system")) -}}
+{{- dict | toJson -}}
+{{- else -}}
+{{- $excludes := list "exporter" "operator" "adapter" "alertmanager" "pushgateway" "blackbox" "kube-state" "webhook" "vmagent" "vminsert" "vmalert" "sidecar" "store" "compact" "receive" "rule" -}}
+{{- $best := dict -}}
+{{- range (lookup "v1" "Service" "" "").items -}}
+{{- $name := lower .metadata.name -}}
+{{- $lbl := .metadata.labels | default dict -}}
+{{- $appName := lower (printf "%s %s" (index $lbl "app.kubernetes.io/name" | default "") (index $lbl "app" | default "")) -}}
+{{- $flavour := "" -}}
+{{- if or (contains "prometheus" $appName) (contains "prometheus" $name) -}}
+{{- $flavour = "prometheus" -}}
+{{- else if or (contains "thanos-quer" $name) (contains "thanos-quer" $appName) (and (eq (index $lbl "app.kubernetes.io/component" | default "") "query") (contains "thanos" $appName)) -}}
+{{- $flavour = "thanos" -}}
+{{- else if or (contains "vmsingle" $name) (contains "vmsingle" $appName) (contains "victoria-metrics-single" $name) -}}
+{{- $flavour = "victoriametrics" -}}
+{{- end -}}
+{{- $excluded := false -}}
+{{- range $excludes -}}{{- if contains . $name -}}{{- $excluded = true -}}{{- end -}}{{- end -}}
+{{- if and $flavour (not $excluded) -}}
+{{- $port := 0 -}}
+{{- range .spec.ports -}}
+{{- if eq $port 0 -}}
+{{- if or (and (eq $flavour "victoriametrics") (eq (int .port) 8428)) (and (ne $flavour "victoriametrics") (or (eq (int .port) 9090) (and (eq $flavour "thanos") (eq (int .port) 10902)))) -}}
+{{- $port = int .port -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if eq $port 0 -}}
+{{- range .spec.ports -}}
+{{- if and (eq $port 0) (or (eq (.name | default "") "web") (eq (.name | default "") "http-web") (and (eq $flavour "thanos") (eq (.name | default "") "http"))) -}}
+{{- $port = int .port -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if ne $port 0 -}}
+{{- $headless := eq (.spec.clusterIP | default "") "None" -}}
+{{- $rank := 3 -}}
+{{- if eq $flavour "thanos" -}}{{- $rank = 4 -}}
+{{- else if eq $flavour "victoriametrics" -}}{{- $rank = 5 -}}
+{{- else if and (or (eq $name "prometheus") (hasSuffix "-prometheus" $name)) (not $headless) -}}{{- $rank = 0 -}}
+{{- else if eq $name "prometheus-operated" -}}{{- $rank = 1 -}}
+{{- else if or (eq (index $lbl "app.kubernetes.io/name" | default "") "prometheus") (eq (index $lbl "app" | default "") "prometheus") -}}{{- $rank = 2 -}}
+{{- end -}}
+{{- $key := printf "%s/%s" .metadata.namespace .metadata.name -}}
+{{- if or (not $best) (lt $rank (int $best.rank)) (and (eq $rank (int $best.rank)) (lt $key $best.key)) -}}
+{{- $best = dict "rank" $rank "key" $key "namespace" .metadata.namespace "name" .metadata.name "port" $port -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if $best -}}
+{{- dict "namespace" $best.namespace "name" $best.name "port" $best.port "source" "detected" | toJson -}}
+{{- else -}}
+{{- dict | toJson -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

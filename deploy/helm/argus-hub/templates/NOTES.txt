@@ -1,6 +1,20 @@
 ARGUS hub {{ .Chart.AppVersion }} installed as {{ .Release.Name }}.
 
 {{- $fullname := include "argus-hub.fullname" . }}
+{{- if include "argus-hub.ingressEnabled" . }}
+{{- $ic := include "argus-hub.ingressClass" . }}
+{{- if hasPrefix "picked:" $ic }}
+
+INGRESS: this cluster has no default IngressClass, so the Ingress uses
+"{{ trimPrefix "picked:" $ic }}", one of its IngressClasses. To choose another, set ingress.className.
+{{- else if eq $ic "none:" }}
+
+WARNING: this cluster has no IngressClass, so no ingress controller will serve
+{{ .Values.ingress.host }}. Install one (ingress-nginx, Traefik, your cloud's),
+or reach the hub with:
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ $fullname }} 8080:{{ .Values.api.service.port }}
+{{- end }}
+{{- end }}
 {{- if eq .Values.postgres.mode "bundled" }}
 {{- $storage := include "argus-hub.postgresStorage" . }}
 {{- if hasPrefix "picked:" $storage }}

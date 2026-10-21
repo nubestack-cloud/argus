@@ -59,8 +59,10 @@ spec:
       {{- end }}
       securityContext:
         runAsNonRoot: true
+        {{- if not (include "argus-hub.openshift" .) }}
         runAsUser: 999
         fsGroup: 999
+        {{- end }}
         seccompProfile: { type: RuntimeDefault }
       # Enough for Postgres to checkpoint and shut down cleanly on SIGTERM
       # rather than be killed mid-write and replay WAL on the next start.

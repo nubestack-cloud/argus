@@ -31,8 +31,9 @@ helm install argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --ve
 ```
 
 `ingress.host` is the only value an install needs (`ingress.clusterIssuer` adds a cert-manager
-certificate). The hub runs with its own backed-up Postgres and already watches the cluster it is
-installed in; agents connect to the same address as the UI. Sign in, add an AI provider, then
+certificate). It works on any conformant Kubernetes: storage, the ingress controller and OpenShift's
+security policy are detected. The hub runs with its own Postgres and already watches the cluster it
+is installed in; agents connect to the same address as the UI. Sign in, add an AI provider, then
 **Clusters → Enroll a cluster** prints the agent install for each other cluster, or **Fleet tokens**
 enrolls a whole fleet through Argo CD or Flux.
 Step by step, with screenshots: the [user guide](https://argus.nubestack.com/). The install and

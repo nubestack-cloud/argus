@@ -150,6 +150,8 @@ export const PROBLEM_GITOPS_MANAGED_REFUSED = 'https://argus.io/errors/gitops-ma
 // human-facing prose that gets reworded, and a UI matching on prose breaks
 // silently with no type error to catch it.
 export const PROBLEM_NOT_FOUND = 'https://argus.io/errors/not-found'
+// POST /incidents/{id}/analyze refused because no AI provider is configured.
+export const PROBLEM_LLM_NOT_CONFIGURED = 'https://argus.io/errors/llm-not-configured'
 
 // Thrown for any non-2xx response. Carries the RFC 9457 problem+json title
 // (always) and detail (when non-empty) so callers can show them directly.

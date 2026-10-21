@@ -16,3 +16,13 @@ to persistence.storageClass — the name the hub chart uses.
 Both are set and differ; persistence.storageClass ({{ .Values.persistence.storageClass }}) wins.
 {{- end }}
 {{- end }}
+{{- $prom := include "argus-agent.prometheusService" . | fromJson }}
+{{- if eq ($prom.source | default "") "detected" }}
+
+Metrics: connected to the Prometheus found at {{ $prom.namespace }}/{{ $prom.name }}:{{ $prom.port }}.
+To use another, set metrics.prometheusService.*; to turn metrics off, metrics.autoDetect=false.
+{{- else if and (not $prom.name) (not .Values.metrics.external.url) }}
+
+Metrics: no Prometheus connected, so the Traffic, Cost and Metrics views stay off.
+It is connected by itself if one is running when the agent is next installed or upgraded.
+{{- end }}

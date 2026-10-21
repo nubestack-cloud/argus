@@ -1,5 +1,8 @@
 {{- if not (include "argus-agent.skip" .) }}
 {{- if .Values.dryRun.enabled }}
+{{- if not (semverCompare ">=1.30.0-0" .Capabilities.KubeVersion.Version) }}
+{{- fail "dryRun.enabled needs Kubernetes 1.30 or later: its admission policy uses ValidatingAdmissionPolicy (admissionregistration.k8s.io/v1), which this cluster does not serve." }}
+{{- end }}
 # argus-dryrun — BACKLOG.md C4's dry_run_patch half (lld/04-rbac-profiles.md
 # §5, ADR-14 in lld/14-adrs.md, decided and accepted; this chart previously
 # said plainly that neither the ServiceAccount nor the tool existed yet —

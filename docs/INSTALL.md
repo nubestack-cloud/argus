@@ -13,7 +13,9 @@ for how to use ARGUS once it is running, see the **user guide at <https://argus.
 
 You need:
 
-- a Kubernetes cluster for the hub, version 1.29 or newer;
+- a Kubernetes cluster for the hub, version 1.29 or newer (1.30 or newer if ARGUS may change
+  anything: remediation's admission policies need it). Any conformant distribution works, OpenShift
+  included: the chart detects OpenShift and lets it assign the pods' user IDs;
 - Helm 3.8 or newer on your machine;
 - an ingress controller in that cluster (or a Gateway API Gateway: see
   [Gateway API](#gateway-api-instead-of-ingress));
@@ -21,6 +23,10 @@ You need:
   reach. No DNS name to spare? `argus.<ingress-ip>.nip.io` points at your ingress controller's IP
   with no DNS change.
 - optionally, cert-manager, to get HTTPS without handling certificates yourself.
+
+The Ingress uses the cluster's default IngressClass, or one of its IngressClasses if none is
+marked default; `ingress.className` chooses one. With no ingress controller at all, the install
+notes say so and give the port-forward command.
 
 The database needs a volume. The chart uses the cluster's default StorageClass, or one of its
 StorageClasses if none is marked default. A cluster with no StorageClass at all still installs, but
@@ -50,7 +56,7 @@ helm install argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --ve
 |---|---|
 | `ingress.host` | **Required.** The hub's hostname |
 | `ingress.clusterIssuer` | The name of a cert-manager ClusterIssuer in this cluster (`kubectl get clusterissuer`), for HTTPS. The install stops if there is none by that name. No cert-manager? Leave it out and add `--set ingress.tls.enabled=true --set ingress.tls.secretName=<your TLS Secret>` instead. **Plain HTTP, for a trial:** leave out both; the hub is then at `http://<host>`, and agents still encrypt their own connection inside it |
-| `ingress.className` | Only if the cluster has more than one ingress controller |
+| `ingress.className` | Only to choose a specific ingress controller. Without it, the chart uses the default IngressClass, or one of the cluster's IngressClasses if none is the default |
 | `postgres.bundled.persistence.size` | Only if you need more than 10Gi, for example `50Gi` |
 | `postgres.bundled.persistence.storageClass` | Only to choose a specific StorageClass. Without it, the chart uses the cluster default, or one of the cluster's StorageClasses if there is no default |
 
@@ -68,7 +74,9 @@ kubectl -n argus-system rollout status deploy/argus-hub --timeout=5m
 ```
 
 You now have the hub, its database, and an agent for this cluster. The agent connects by itself
-within a minute and appears in ARGUS as `local`.
+within a minute and appears in ARGUS as `local`. If the cluster runs Prometheus
+(Rancher monitoring, kube-prometheus-stack and the like), the agent connects to it by itself for
+metrics, traffic and cost; the install notes name the one it found.
 
 ## Step 2: Sign in
 
@@ -88,27 +96,48 @@ ARGUS uses an AI model to investigate incidents. Pick one:
 **A model behind an API.** Any OpenAI-compatible endpoint works, including a model you host
 yourself. Add it in **Settings → AI providers** and click **Test connection**. Nothing to install.
 
-**Claude Code or Codex.** The hub runs these for you once you give it a credential. Save the
-credential to a file without showing it on screen, then upgrade the hub with it:
+**Claude Code or Codex.** The hub runs these for you; it needs only their credential. Neither has to
+be installed on the machine you run `helm` from.
+
+Put the credential in a file there, without it showing on screen or in your shell history. The
+command asks you to paste it, and nothing appears as you paste:
 
 ```bash
 mkdir -p ~/.argus && chmod 700 ~/.argus
-read -rs TOKEN && printf '%s' "$TOKEN" > ~/.argus/model-credential && unset TOKEN && chmod 600 ~/.argus/model-credential
+printf 'Paste the credential, then press Enter: '; read -rs TOKEN; echo
+printf '%s' "$TOKEN" > ~/.argus/model-credential && unset TOKEN && chmod 600 ~/.argus/model-credential
+```
 
+> [!TIP]
+> **How to get the credential**, on any machine with a browser:
+>
+> - **Claude subscription (Pro or Max):** on a machine with Claude Code
+>   (`npm install -g @anthropic-ai/claude-code`), run `claude setup-token`, sign in in the browser it
+>   opens, and copy the token it prints. It starts `sk-ant-oat01-`.
+> - **Anthropic API key:** [console.anthropic.com](https://console.anthropic.com/) → **API keys** →
+>   **Create key**. It starts `sk-ant-api03-`.
+> - **Codex:** an OpenAI API key, from [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
+>   → **Create new secret key**. It starts `sk-`.
+
+Then upgrade the hub with it. For a Claude subscription:
+
+```bash
 helm upgrade argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --version 0.2.0 \
   -n argus-system --reset-then-reuse-values \
   --set-file cliRunner.modelCredential.claudeCodeOauthToken=$HOME/.argus/model-credential \
   --set cliRunner.authMode=subscription
 ```
 
-That example is for a Claude subscription. For the others, use:
+For the others, swap the `--set-file` option:
 
 | You have | Option |
 |---|---|
-| A Claude subscription | `cliRunner.modelCredential.claudeCodeOauthToken`, plus `cliRunner.authMode=subscription` |
+| A Claude subscription | `cliRunner.modelCredential.claudeCodeOauthToken`, plus `--set cliRunner.authMode=subscription` |
 | An Anthropic API key | `cliRunner.modelCredential.anthropicApiKey` |
 | An OpenAI API key (Codex) | `cliRunner.modelCredential.openaiApiKey` |
 | The credential in a Secret already | `cliRunner.modelCredential.existingSecret`, with key `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` |
+
+Once the upgrade is done, delete the file: `rm ~/.argus/model-credential`.
 
 Never pass a credential with plain `--set`: it would be saved in your shell history. Then in
 **Settings → AI providers**, add a provider of kind **CLI**, with runner URL
@@ -133,6 +162,13 @@ helm install argus-agent oci://registry-1.docker.io/nubestack/argus-agent-chart 
 ```
 
 When the cluster appears in **Clusters**, click **Accept**.
+
+> [!WARNING]
+> **A cluster that already runs an agent for another hub** needs it removed first:
+> `helm -n argus-system uninstall argus-agent`, then
+> `kubectl -n argus-system delete secret argus-agent-identity --ignore-not-found`. Otherwise the
+> install stops with "cannot reuse a name that is still in use", and the old agent keeps an
+> identity the new hub cannot verify.
 
 **Many clusters.** Open **Clusters → Fleet tokens** and issue one token for all of them. Tick
 **Accept automatically** if you don't want to accept each cluster by hand. Put the token in every
@@ -462,7 +498,8 @@ record in **Clusters** and enroll again.
 
 - HTTPS on the Ingress; settings in a values file passed on every upgrade.
 - External Postgres with its own backups, if incident history and the audit log must survive losing
-  the cluster.
+  the cluster. With the bundled one, a copy taken off the cluster before every upgrade
+  ([Upgrading](#upgrading)).
 - The database volume sized for your fleet (0.5–1 GB per busy cluster) and finding retention set to
   suit.
 - Model credentials by `--set-file` or `existingSecret`, never `--set`.

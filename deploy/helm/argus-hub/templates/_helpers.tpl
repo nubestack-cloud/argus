@@ -308,3 +308,50 @@ true
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+"true" on OpenShift, where the restricted security policy assigns each pod a
+user and group from the namespace's range and refuses fixed ones: every pod
+then leaves runAsUser, runAsGroup and fsGroup out and keeps the rest of its
+security context. `openshift: auto` (the default) detects it from the
+security.openshift.io API; true or false forces it. global.openshift, when
+set, wins, so one setting reaches the hub and the agent it installs.
+*/}}
+{{- define "argus-hub.openshift" -}}
+{{- $v := toString (dig "openshift" .Values.openshift (.Values.global | default dict)) -}}
+{{- if or (eq $v "true") (and (has $v (list "auto" "" "<nil>")) (.Capabilities.APIVersions.Has "security.openshift.io/v1")) -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+Which IngressClass the hub's Ingress names, decided once for ingress.yaml and
+NOTES. Returns "<mode>:<class>":
+  set:<class>     ingress.className was given
+  default:        the cluster has a default IngressClass, so none is named
+  picked:<class>  no default, so the chart chose one of the cluster's classes
+                  rather than leave the Ingress unclaimed
+  none:           the cluster has no IngressClass: no controller will serve it
+Under `helm template` or a client dry run (no cluster to look at) it is
+"default:", the plain values.
+*/}}
+{{- define "argus-hub.ingressClass" -}}
+{{- if .Values.ingress.className -}}
+set:{{ .Values.ingress.className }}
+{{- else if not (lookup "v1" "Namespace" "" "kube-system") -}}
+default:
+{{- else -}}
+{{- $default := false -}}
+{{- $names := list -}}
+{{- range (lookup "networking.k8s.io/v1" "IngressClass" "" "").items -}}
+{{- $names = append $names .metadata.name -}}
+{{- if eq (index (.metadata.annotations | default dict) "ingressclass.kubernetes.io/is-default-class" | default "") "true" -}}{{- $default = true -}}{{- end -}}
+{{- end -}}
+{{- if $default -}}
+default:
+{{- else if $names -}}
+picked:{{ first (sortAlpha $names) }}
+{{- else -}}
+none:
+{{- end -}}
+{{- end -}}
+{{- end -}}
+

@@ -40,6 +40,7 @@ ENUMS = {
 EXTRA = {
     'argus-hub': {
         'cliRunner.enabled': {'enum': ['auto', True, False, 'true', 'false']},
+        'openshift': {'enum': ['auto', True, False, 'true', 'false']},
         # The agent chart's values; its own schema validates them.
         'localAgent': {'type': 'object'},
         # Older charts had a nightly backup and then a pre-upgrade dump here
@@ -48,7 +49,9 @@ EXTRA = {
         # still upgrades.
         'postgres.bundled.backup': {'type': 'object'},
     },
-    'argus-agent': {},
+    'argus-agent': {
+        'openshift': {'enum': ['auto', True, False, 'true', 'false']},
+    },
 }
 
 FREE_FORM = {'annotations', 'labels', 'nodeSelector', 'podAnnotations', 'podLabels', 'resources', 'securityContext', 'podSecurityContext', 'affinity'}

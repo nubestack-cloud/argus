@@ -24,7 +24,7 @@ metadata:
     {{ $k | quote }}: {{ $v | toString | quote }}
     {{- end }}
 spec:
-  {{- with .Values.ingress.className }}
+  {{- with index (splitList ":" (include "argus-hub.ingressClass" .)) 1 }}
   ingressClassName: {{ . | quote }}
   {{- end }}
   {{- if include "argus-hub.ingressTLS" . }}

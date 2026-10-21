@@ -65,8 +65,10 @@ spec:
         # ("image has non-numeric user (node), cannot verify user is non-root")
         # — found on a real install, 2026-09-29. 1000:1000 is `node` in the
         # official node:22-trixie-slim base; change both if that base changes.
+        {{- if not (include "argus-hub.openshift" .) }}
         runAsUser: 1000
         runAsGroup: 1000
+        {{- end }}
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: cli-runner

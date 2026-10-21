@@ -1,15 +1,21 @@
 {{- if not (include "argus-agent.skip" .) }}
-# argus-investigate — cluster-wide, read-only. Transcribed verbatim from
-# lld/04-rbac-profiles.md §4, which is the authoritative source for this
-# resource/verb list; do not paraphrase or "improve" it here — update §4
-# first, then mirror the change into this file.
+# argus-investigate — cluster-wide, read-only, in three ClusterRoles bound to
+# the one ServiceAccount:
 #
-# This ClusterRole is intentionally NOT parameterized by any Helm value.
-# Unlike argus-remediate below (opt-in, see values.yaml's remediate.enabled)
-# or argus-dryrun (opt-in, templates/dryrun.yaml, see values.yaml's
-# dryRun.enabled), argus-investigate carries no opt-in packs and no
-# per-cluster variability: it is always present, and its rule set never
-# changes based on what a given cluster enables.
+#   argus-investigate       the explicit list below, always present and not
+#                           parameterized: every kind ARGUS's own features
+#                           read, including the core API group kind by kind
+#                           and the one metadata-only Secret get.
+#   argus-investigate-all   read.allApiGroups (the default): get/list/watch on
+#                           every non-core API group the cluster serves at
+#                           install or upgrade (.Capabilities), minus
+#                           read.excludeApiGroups. The core group is never in
+#                           it, because Secrets and the */proxy subresources
+#                           live there.
+#   argus-investigate-view  read.allApiGroups: aggregates every ClusterRole
+#                           labelled aggregate-to-view, so a CRD installed
+#                           later that grants read to the built-in "view"
+#                           role is readable without an upgrade.
 #
 # Every rule below grants only get/list/watch (or, for the two rows marked
 # "inventory only", just get/list). There is no create/update/patch/delete
@@ -319,6 +325,49 @@ rules:
   - apiGroups: [""]
     resources: [secrets]
     verbs: [get]
+{{- if .Values.read.allApiGroups }}
+{{- $groups := dict }}
+{{- range .Capabilities.APIVersions }}
+{{- $parts := splitList "/" . }}
+{{- $g := index $parts 0 }}
+{{- if and (ge (len $parts) 2) (not (regexMatch "^v[0-9]" $g)) (not (has $g $.Values.read.excludeApiGroups)) }}
+{{- $_ := set $groups $g true }}
+{{- end }}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: argus-investigate-all
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+rules:
+  {{- with keys $groups | sortAlpha }}
+  - apiGroups: {{ toJson . }}
+    resources: ["*"]
+    verbs: [get, list, watch]
+  {{- end }}
+  # Core kinds the explicit list does not name. Still kind by kind: never
+  # secrets, and never a */proxy subresource.
+  - apiGroups: [""]
+    resources: [limitranges, podtemplates, componentstatuses]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: argus-investigate-view
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        rbac.authorization.k8s.io/aggregate-to-view: "true"
+# No `rules`: the API server's aggregation controller owns that field and
+# fills it. Rendering one (even empty) makes every upgrade fight the
+# controller: a server-side apply refuses the conflict, and a client-side one
+# blanks the aggregated rules until the controller writes them back.
+{{- end }}
 {{- if .Values.remediate.enabled }}
 ---
 # argus-remediate — lld/04-rbac-profiles.md §7.1's workload-recovery pack,
@@ -353,6 +402,9 @@ rules:
 # volumes...) — templates/validatingadmissionpolicy.yaml's field restriction
 # is what actually closes that gap, per §7.1's own explicit callout: "do not
 # deploy this ClusterRole without it."
+{{- if not (semverCompare ">=1.30.0-0" .Capabilities.KubeVersion.Version) }}
+{{- fail "remediate.enabled needs Kubernetes 1.30 or later: the admission policies that limit what ARGUS may change use ValidatingAdmissionPolicy (admissionregistration.k8s.io/v1), which this cluster does not serve. Read-only installs work on 1.29." }}
+{{- end }}
 {{- if and (not .Values.remediate.allNamespaces) (not .Values.remediate.namespaces) }}
 {{- fail "remediate.enabled is true but neither remediate.namespaces nor remediate.allNamespaces is set. Set remediate.namespaces to the namespaces ARGUS may act in (preferred), or remediate.allNamespaces=true to grant cluster-wide write. The chart refuses to guess: an empty grant fails at execution time with a confusing RBAC error, and a cluster-wide default would silently include kube-system." }}
 {{- end }}

@@ -17400,6 +17400,56 @@ a.check-cell-link:hover .check-cell-label {
   width: 100%;
 }
 
+/* A message anchored under the control it is about, floating over the page
+   rather than taking room in its row, so a failure never pushes the row's
+   other actions about. Same surface as .more-actions-menu; the failure is
+   named in the text, the danger rule only adds to it. */
+.analyze-control {
+  position: relative;
+}
+
+.anchored-callout {
+  position: absolute;
+  left: 0;
+  top: calc(100% + var(--space-1));
+  z-index: 20;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  width: max-content;
+  max-width: min(24rem, calc(100vw - 2 * var(--space-4)));
+  padding: var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  font-size: var(--font-size-sm);
+}
+
+.anchored-callout-end {
+  left: auto;
+  right: 0;
+}
+
+.anchored-callout-body {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.anchored-callout-body p {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.anchored-callout-close {
+  flex: none;
+  margin: 0;
+  line-height: 1;
+}
+
 .lc-name a {
   color: inherit;
   text-decoration: underline;

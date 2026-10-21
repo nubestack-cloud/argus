@@ -289,24 +289,6 @@ export function OnboardingWizard({
 
 
 
-// Exported (BACKLOG P3, matching OnboardingWizard's own precedent above) so
-// this file's own test can render it directly.
-export function AIProviderSetupCard() {
-  return (
-    <section className="card overview-onboarding-card" aria-labelledby="overview-ai-setup-title">
-      <div className="overview-onboarding-hero">
-        <p className="eyebrow">Setup needed</p>
-        <h2 id="overview-ai-setup-title">Configure your AI provider</h2>
-        <p>Incidents are detected without one, but never investigated — automatic investigation skips them silently.</p>
-      </div>
-      <div className="overview-onboarding-actions overview-onboarding-footer-actions">
-        <Link to="/settings?section=providers" className="overview-action">Go to AI provider settings</Link>
-      </div>
-    </section>
-  )
-}
-
-
 // AutomationStatusCard answers the one question the rest of this page cannot:
 // is the automatic machinery actually running? One line at the foot of the
 // Overview, because a tripped breaker or an empty allowlist makes automation
@@ -541,15 +523,6 @@ export function OverviewPage() {
   const counts = incidentCountsQuery.data
   const overview = overviewQuery.data
 
-  // Kind-dependent: an `api` provider needs a base URL, a `cli` provider a
-  // runner URL. Defaults to "configured" while loading or for a viewer who
-  // cannot see settings, so nobody is shown a setup card they cannot act on.
-  const aiProviderConfigured =
-    !canManageSettings ||
-    settingsQuery.data === undefined ||
-    (settingsQuery.data.llm.providerKind === 'cli'
-      ? settingsQuery.data.llm.cliRunnerUrl !== ''
-      : settingsQuery.data.llm.baseUrl !== '')
   // Onboarding is done once any cluster has reached Active, independently of
   // whether an incident has happened: a quiet fleet is the good outcome.
   const fleetOnboarded = clusters.some((c) => CLUSTER_PROGRESS_RANK[c.state] >= 4)
@@ -677,7 +650,9 @@ export function OverviewPage() {
         </div>
       )}
 
-      {!isLoading && !isError && !aiProviderConfigured && <AIProviderSetupCard />}
+      {/* No AI provider is a step in the top bar's setup guide (SetupGuide.tsx),
+          not a card here: a permanent card above the fleet could not be put
+          away, and said what the guide already says. */}
 
       {!isLoading && !isError && (counts?.all ?? 0) === 0 && !fleetOnboarded && (
         <OnboardingWizard clusters={clusters} canOnboard={canOnboard} canAccept={canAccept} />

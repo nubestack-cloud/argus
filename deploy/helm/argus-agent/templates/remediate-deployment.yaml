@@ -79,8 +79,10 @@ spec:
         # Same explicit numeric UID/GID as the investigation Deployment — see
         # its own comment for the real containerd/RKE2 failure that made a
         # symbolic image user insufficient.
+        {{- if not (include "argus-agent.openshift" .) }}
         runAsUser: 65532
         runAsGroup: 65532
+        {{- end }}
         seccompProfile:
           type: RuntimeDefault
       containers:

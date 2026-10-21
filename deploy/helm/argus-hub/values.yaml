@@ -16,7 +16,7 @@ image:
   # compromised publishing credential); a digest cannot, so a chart version
   # always installs the same image. Clear it to pull by `tag`, for example a
   # locally built image, and set pullPolicy to Always if the tag moves.
-  digest: "sha256:2ae8254559b4df8091a6715b528efee1094ff7b69a1645de73b6cbe10df94d76"
+  digest: "sha256:57dfb1e020a3d49e1c194d0df11237ef0a6588961abdf7ad30da80340f1f2f1f"
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
@@ -211,16 +211,12 @@ postgres:
     # limit above). The container default of 64Mi is too small for concurrent
     # parallel queries.
     sharedMemory: 512Mi
-
-    # A dump of the database before every `helm upgrade`, on the database's
-    # own volume (backups/), so a bad upgrade can be rolled back: migrations
-    # only move forward. Not a backup policy: it shares the database's disk.
-    # For data you must not lose, use postgres.mode=external with your
-    # database's own backups.
-    backup:
-      beforeUpgrade: true
-      # How many pre-upgrade dumps to keep (each about a tenth of the database).
-      keep: 2
+    # No backups of its own: before an upgrade, take one off the cluster
+    # (docs/INSTALL.md, "Upgrading"). For data you must not lose, use
+    # postgres.mode=external with your database's own backups.
+    # Ignored. Older charts' backup settings (a nightly CronJob, then a
+    # pre-upgrade dump) are accepted here so their values files still upgrade.
+    backup: {}
 
   external:
     # Secret holding the two connection strings. Keys are configurable because
@@ -368,6 +364,12 @@ resources:
 # hub, the bundled Postgres and the CLI runner — so a cluster that needs a
 # toleration or a private-registry secret gets it on all three.
 podAnnotations: {}
+# OpenShift's restricted security policy assigns pods their user and group
+# IDs and refuses fixed ones. auto (the default) detects OpenShift and then
+# leaves runAsUser, runAsGroup and fsGroup out of every pod; true or false
+# forces it either way. global.openshift does the same for this chart and,
+# on the hub, the agent it installs.
+openshift: auto
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65532

@@ -56,7 +56,7 @@ vi.mock('../auth/useAuth', () => ({
   useAuth: () => ({ accessToken: 'test-token' }),
 }))
 
-import { AIProviderSetupCard, AutomationStatusCard, OnboardingWizard } from './OverviewPage'
+import { AutomationStatusCard, OnboardingWizard } from './OverviewPage'
 import { IncidentActivity } from '../overview/NowBand'
 import type { IncidentOverviewDay } from '../api/types'
 
@@ -180,7 +180,7 @@ describe('OnboardingWizard — capability-gated actions are disabled, not hidden
 })
 
 // BACKLOG P3 (second round). The rest of OverviewPage outside the onboarding
-// wizard: AutomationStatusCard, AIProviderSetupCard and IncidentActivity are
+// wizard: AutomationStatusCard and IncidentActivity are
 // all presentational-plus-derivation components fed by props the page's own
 // queries produce — same OnboardingWizard/DetectionCard precedent, tested
 // directly with plain props rather than through the whole page's seven
@@ -311,20 +311,6 @@ describe('AutomationStatusCard — the one card that says whether automation is 
     renderAutomationCard({ autonomy: autonomy(), breaker: undefined, windows: undefined })
     expect(screen.getByText(/Circuit breaker state unavailable/i)).toBeTruthy()
     expect(screen.getByText(/Freeze window state unavailable/i)).toBeTruthy()
-  })
-})
-
-describe('AIProviderSetupCard — the setup-needed card OverviewPage shows only while unconfigured', () => {
-  it('renders the setup message and a link into the AI providers settings section', () => {
-    render(
-      <MemoryRouter>
-        <AIProviderSetupCard />
-      </MemoryRouter>,
-    )
-    expect(screen.getByText('Configure your AI provider')).toBeTruthy()
-    expect(screen.getByText(/never investigated/i)).toBeTruthy()
-    const link = screen.getByRole('link', { name: /Go to AI provider settings/i })
-    expect(link.getAttribute('href')).toBe('/settings?section=providers')
   })
 })
 

@@ -69,7 +69,7 @@ The agent has two modes.
 
 | Mode | Default? | Permissions |
 |---|---:|---|
-| Investigate | Yes | Read-only Kubernetes access; no Secrets and no exec |
+| Investigate | Yes | Read-only access to the whole cluster, CRDs included; no Secret contents, no exec, no proxy |
 | Remediate | No | Narrow write access, only when enabled in the agent chart |
 
 Read-only mode is enough for detection, triage, and most investigation. Remediation requires an
@@ -220,9 +220,9 @@ These boundaries are useful to know before deploying:
 - It does not run arbitrary shell commands in your clusters.
 - It does not read Kubernetes Secrets as part of normal investigation.
 - It does not make the hub horizontally scalable today; hub replicas must stay at `1`.
-- It does not back up its database on a schedule. The bundled Postgres is dumped before each
-  upgrade so the upgrade can be rolled back; data you must keep belongs in an external database
-  with its own backups ([INSTALL.md](INSTALL.md#before-you-start)).
+- It does not back up its database. Before upgrading the bundled Postgres you take a copy off the
+  cluster, which is also how an upgrade is rolled back; data you must keep belongs in an external
+  database with its own backups ([INSTALL.md](INSTALL.md#upgrading)).
 - It does not make every problem automatically fixable. Some incidents produce guidance only.
 
 ## Typical Deployment Shapes

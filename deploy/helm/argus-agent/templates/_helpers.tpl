@@ -257,3 +257,17 @@ true
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+"true" on OpenShift, where the restricted security policy assigns each pod a
+user and group from the namespace's range and refuses fixed ones: every pod
+then leaves runAsUser, runAsGroup and fsGroup out and keeps the rest of its
+security context. `openshift: auto` (the default) detects it from the
+security.openshift.io API; true or false forces it. global.openshift, when
+set, wins, so one setting reaches the hub and the agent it installs.
+*/}}
+{{- define "argus-agent.openshift" -}}
+{{- $v := toString (dig "openshift" .Values.openshift (.Values.global | default dict)) -}}
+{{- if or (eq $v "true") (and (has $v (list "auto" "" "<nil>")) (.Capabilities.APIVersions.Has "security.openshift.io/v1")) -}}true{{- end -}}
+{{- end -}}
+

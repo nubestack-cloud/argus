@@ -118,6 +118,18 @@
         }
       }
     },
+    "read": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allApiGroups": {
+          "type": "boolean"
+        },
+        "excludeApiGroups": {
+          "type": "array"
+        }
+      }
+    },
     "remediate": {
       "type": "object",
       "additionalProperties": false,
@@ -520,6 +532,15 @@
     },
     "resources": {
       "type": "object"
+    },
+    "openshift": {
+      "enum": [
+        "auto",
+        true,
+        false,
+        "true",
+        "false"
+      ]
     },
     "nodeSelector": {
       "type": "object"

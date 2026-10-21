@@ -15,8 +15,10 @@ helm install argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --ve
 
 `ingress.host` is the only value an install needs. Drop `ingress.clusterIssuer` if you do not use
 cert-manager, and set `ingress.tls.enabled=true` with `ingress.tls.secretName` naming an existing
-certificate Secret instead (or leave TLS off for a lab). Set `ingress.className` if the cluster has
-more than one ingress controller.
+certificate Secret instead (or leave TLS off for a lab). The IngressClass and the database's
+StorageClass default to the cluster's defaults, or one of its classes when none is marked default;
+`ingress.className` and `postgres.bundled.persistence.storageClass` choose. On OpenShift (detected,
+or `global.openshift=true`) the pods leave their user IDs for the cluster to assign.
 
 **Gateway API instead of Ingress:** set `httpRoute.host` and `httpRoute.parentRefs` (your Gateway)
 instead of `ingress.host`; the chart then creates an HTTPRoute for the UI, the API and the agent
@@ -51,7 +53,6 @@ If agents cannot use the Ingress, set `tunnel.service.type=LoadBalancer` (or `No
 | This cluster's agent (the agent chart, as `localAgent`) and its enrollment key `Secret` | `localAgent.enabled` (the default), the hub in `argus-system`, and no agent installed here already |
 | Bootstrap admin password `Secret` | Unless `bootstrap.existingSecret` |
 | Postgres `StatefulSet`, PVC, `Service`, connection `Secret` | `postgres.mode=bundled` (the default) |
-| A pre-upgrade `Job` that dumps the database onto its own volume | Every `helm upgrade` with bundled Postgres (`postgres.bundled.backup.beforeUpgrade`) |
 | CLI runner `Deployment`, `Service`, `Secret`s | A model credential is supplied, or `cliRunner.enabled=true` |
 | Tunnel `LoadBalancer`/`NodePort`, or passthrough `Ingress` | `tunnel.service.type`, `tunnel.ingress.enabled` |
 
@@ -67,10 +68,10 @@ Migrations run in a `migrate` init container before the hub starts, on install a
   runs an agent. `localAgent.enabled=false` turns it off.
 - **Images are pinned by digest.** Each chart release pins its images by digest, so `--version` alone
   reproduces an install.
-- **Upgrades dump the database first.** With bundled Postgres, `helm upgrade` writes a dump onto the
-  database's own volume before any migration. Migrations only move forward, so a rollback is
-  "restore that dump, then `helm rollback`"; the install guide has the steps. There are no scheduled
-  backups: use `postgres.mode=external` with your database's own backups for data you must keep.
+- **No backups of its own.** An upgrade only runs the new release's migrations, each in its own
+  transaction. Before upgrading the bundled Postgres, take a copy off the cluster with one
+  `pg_dump` command; rolling back is "restore that copy, then `helm rollback`". The install guide has
+  both. For data you must keep, use `postgres.mode=external` with your database's own backups.
 - **One replica.** The hub holds every agent's tunnel in memory, so `replicaCount` must be 1 and
   upgrades use `strategy: Recreate`. Agents reconnect on their own within seconds.
 - **Generated Secrets survive upgrades.** The admin password, Postgres password, runner token and
@@ -82,8 +83,8 @@ Migrations run in a `migrate` init container before the hub starts, on install a
   cannot bypass row-level security; one Secret supplies both connection strings.
 - **The CLI investigator** (`cliRunner.*`) needs a model credential. Pass it with `--set-file` or an
   existing Secret, never `--set`.
-- **The database holds the hub's signing keys and CA.** Protect its volume and any dump like the hub's
-  own credentials.
+- **The database holds the hub's signing keys and CA.** Protect its volume, and any copy of it, like
+  the hub's own credentials.
 
 ## Check before installing
 

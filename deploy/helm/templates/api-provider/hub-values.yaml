@@ -6,6 +6,6 @@
 ingress:
   host: CHANGE_ME_HUB_HOST
   clusterIssuer: CHANGE_ME_ISSUER   # your cert-manager ClusterIssuer; or remove it and set tls.secretName
-# Bundled Postgres (10Gi, dumped before every upgrade) is the default. For
+# Bundled Postgres (10Gi, no backups of its own) is the default. For
 # production, use postgres.mode=external (docs/INSTALL.md, "External Postgres").
 # Configure the API provider afterwards in Settings -> AI providers.

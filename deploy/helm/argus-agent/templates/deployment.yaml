@@ -75,8 +75,10 @@ spec:
         # nonroot UID/GID — hardcode it here rather than trust kubelet to
         # resolve the image's /etc/passwd entry, which this cluster's runtime
         # config doesn't do.
+        {{- if not (include "argus-agent.openshift" .) }}
         runAsUser: 65532
         runAsGroup: 65532
+        {{- end }}
         seccompProfile:
           type: RuntimeDefault
       containers:

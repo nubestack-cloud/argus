@@ -382,18 +382,7 @@
               ]
             },
             "backup": {
-              "type": "object",
-              "properties": {
-                "beforeUpgrade": {
-                  "type": "boolean"
-                },
-                "keep": {
-                  "type": [
-                    "integer",
-                    "string"
-                  ]
-                }
-              }
+              "type": "object"
             }
           }
         },
@@ -675,6 +664,15 @@
     },
     "podAnnotations": {
       "type": "object"
+    },
+    "openshift": {
+      "enum": [
+        "auto",
+        true,
+        false,
+        "true",
+        "false"
+      ]
     },
     "podSecurityContext": {
       "type": "object"

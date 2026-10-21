@@ -4,7 +4,8 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { explainStage, validateStage, nextActionSummary, executeStage, approveStage } from './incidentLifecycle'
 import type { Analysis, AnalysisStep, ApprovalQueueItem, IncidentDetail, IncidentReopenCause, ObjectOwnership, RemediationPlan, ToolCall } from '../api/types'
-import { CAP_INCIDENT_REANALYSE, CAP_REMEDIATION_APPROVE, CAP_REPO_READ, CAP_REPO_WRITE, CAP_REMEDIATION_EXECUTE_PR } from '../api/capabilities'
+import { CAP_INCIDENT_REANALYSE, CAP_ORG_SETTINGS_WRITE, CAP_REMEDIATION_APPROVE, CAP_REPO_READ, CAP_REPO_WRITE, CAP_REMEDIATION_EXECUTE_PR } from '../api/capabilities'
+import { ApiError, PROBLEM_LLM_NOT_CONFIGURED } from '../api/client'
 
 // BACKLOG D8 A1. These tests exist because the lifecycle rail and the prose
 // beside it independently described the SAME fact at two different strengths,
@@ -2615,6 +2616,55 @@ describe('IncidentDetailPage — asynchronous analyze (PROJECT.md M1)', () => {
       expect(alert.textContent).toMatch(/last analysis did not complete/i)
       expect(alert.textContent).toMatch(/argument list too long/)
       expect((screen.getByRole('button', { name: 'Analyze incident' }) as HTMLButtonElement).disabled).toBe(false)
+    } finally {
+      grantedCapabilities.delete(CAP_INCIDENT_REANALYSE)
+    }
+  })
+})
+
+// A refused start floats under the button instead of taking room in the
+// header's action row, says what is missing in plain words, and can be put
+// away.
+describe('IncidentDetailPage — Analyze with no AI provider', () => {
+  const noProvider = () =>
+    new ApiError('AI provider not usable', 503, 'llm: no usable AI provider: no API base URL configured', PROBLEM_LLM_NOT_CONFIGURED)
+
+  it('explains it, links an administrator to the settings, and can be dismissed', async () => {
+    grantedCapabilities.add(CAP_INCIDENT_REANALYSE)
+    grantedCapabilities.add(CAP_ORG_SETTINGS_WRITE)
+    try {
+      mockGetIncident.mockResolvedValue(detailIncident({ state: 'Detected', analysis: null }))
+      mockGetApprovals.mockResolvedValue({ approvals: [] })
+      mockAnalyzeIncident.mockRejectedValue(noProvider())
+      renderPage()
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Analyze incident' }))
+      const alert = await screen.findByRole('alert')
+      expect(alert.textContent).toMatch(/No AI provider is set up/)
+      expect(alert.textContent).not.toMatch(/llm:/)
+      expect(within(alert).getByRole('link', { name: 'Set up an AI provider' }).getAttribute('href')).toBe('/settings?section=providers')
+      expect(alert.closest('.anchored-callout')).toBeTruthy()
+
+      fireEvent.click(within(alert).getByRole('button', { name: 'Dismiss' }))
+      expect(screen.queryByRole('alert')).toBeNull()
+    } finally {
+      grantedCapabilities.delete(CAP_INCIDENT_REANALYSE)
+      grantedCapabilities.delete(CAP_ORG_SETTINGS_WRITE)
+    }
+  })
+
+  it('tells someone who cannot change settings who can, instead of a link', async () => {
+    grantedCapabilities.add(CAP_INCIDENT_REANALYSE)
+    try {
+      mockGetIncident.mockResolvedValue(detailIncident({ state: 'Detected', analysis: null }))
+      mockGetApprovals.mockResolvedValue({ approvals: [] })
+      mockAnalyzeIncident.mockRejectedValue(noProvider())
+      renderPage()
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Analyze incident' }))
+      const alert = await screen.findByRole('alert')
+      expect(alert.textContent).toMatch(/Ask an administrator/)
+      expect(within(alert).queryByRole('link')).toBeNull()
     } finally {
       grantedCapabilities.delete(CAP_INCIDENT_REANALYSE)
     }

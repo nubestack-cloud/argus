@@ -21,10 +21,11 @@ The first public release.
   auto-accept, for GitOps rollouts. Issue and revoke them from **Clusters → Fleet tokens**.
 - **Argo CD and Flux examples** for the hub and for the agent on every cluster (`deploy/examples/`).
 - **Values validation.** Both charts ship a `values.schema.json`, so a misspelt key fails the install.
-- **A database dump before every upgrade.** With the bundled Postgres, `helm upgrade` dumps the
-  database onto its own volume first, so an upgrade can be
-  [rolled back](docs/INSTALL.md#rolling-back-an-upgrade). There are no scheduled backups: for data you
-  must keep, use an external Postgres with its own backups.
+- **Upgrades only migrate.** `helm upgrade` runs the new release's migrations, each in one
+  transaction, and does nothing else to the database. The upgrade steps start with one command that
+  copies the bundled database off the cluster, which is also how an upgrade is
+  [rolled back](docs/INSTALL.md#rolling-back-an-upgrade). The chart takes no backups of its own: for
+  data you must keep, use an external Postgres with its own backups.
 - **This cluster's agent is installed with the hub**, enrolled and accepted automatically through a
   single-use token the hub registers for it (listed, and revocable, under Fleet tokens).
 - **Findings are kept 30 days on new installs** (Settings → General), so the database has a
@@ -47,13 +48,36 @@ The first public release.
 - The hub chart installs this cluster's agent, except where one is already installed.
 - `ingress.enabled` now defaults to `true` and renders only when `ingress.host` is set.
 - The database volume defaults to 10Gi. The nightly backup CronJob and its volume are gone; an old
-  backup volume is kept and can be deleted. Old `postgres.bundled.backup.*` keys are ignored.
+  backup volume is kept and can be deleted. `postgres.bundled.backup.*` keys are accepted and
+  ignored.
 - Unknown values keys are now rejected.
 
 See [Upgrading to 0.2.0](docs/INSTALL.md#upgrading-from-a-release-before-020) for the details.
 
 ### Fixed
 
+- **The charts install on any conformant Kubernetes without cluster-specific settings.** On
+  OpenShift (detected, or `global.openshift=true`) the pods leave their user and group IDs for the
+  cluster to assign, as its restricted policy requires. With no default IngressClass the hub's
+  Ingress uses one of the cluster's, and with none at all the install notes say so. Remediation and
+  dry runs refuse a cluster older than 1.30 with a plain message, since their admission policies
+  need it; a read-only agent still installs on 1.29.
+- **A refused Analyze no longer shifts the incident header.** The reason floats under the button and
+  can be dismissed. With no AI provider set up it says so in plain words, with a link to set one
+  up for people who can. The Overview no longer shows a setup card that could not be put away:
+  choosing an AI provider is a step in the top bar's setup guide.
+- **The agent can read the whole cluster by default** (`read.allApiGroups`): get, list and watch on
+  every API group the cluster serves, CRDs included, plus CRDs added later that grant read to the
+  built-in `view` role. Before, it read only a fixed list of kinds. Still never Secret contents,
+  `pods/exec`, `attach`, `port-forward` or `*/proxy`, and never a write. A few groups whose reads
+  amount to credentials or sessions are left out (`read.excludeApiGroups`); a CRD added later
+  without that label becomes readable at the agent's next `helm upgrade`.
+- **The install works on a cluster with no default StorageClass.** The bundled database's volume
+  uses the cluster default, else one of the cluster's StorageClasses, instead of waiting forever
+  for a volume nothing would create. With no StorageClass at all the database runs on a temporary
+  volume, and the install notes say so. An existing database's volume is never changed.
+- **A missing `ingress.clusterIssuer` stops the install** with the cluster's ClusterIssuers listed,
+  instead of an Ingress whose certificate never arrives.
 - **The sign-in page shows nothing about your installation.** Anyone who can reach it sees it before
   signing in, so the counters, charts and activity feed from the original designs are gone, along with
   the disabled Google / Entra ID / SAML buttons shown when no single sign-on provider is configured.

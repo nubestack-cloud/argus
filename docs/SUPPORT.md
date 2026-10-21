@@ -19,8 +19,14 @@ cluster.
 **Remediation needs 1.30.** The read-only agent needs nothing beyond long-GA APIs. Remediation
 (`remediate.enabled`) and dry-run validation (`dryRun.enabled`) are fenced by
 `ValidatingAdmissionPolicy` at `admissionregistration.k8s.io/v1`, GA in 1.30; on 1.29 the agent chart
-fails to install with those switches on, with a missing-API error. There is deliberately no fallback:
-the admission policy is the backstop for every write ARGUS makes.
+refuses those switches with a message saying so. There is deliberately no fallback: the admission
+policy is the backstop for every write ARGUS makes.
+
+**Distributions.** The charts need no distribution-specific settings: storage, the IngressClass and
+OpenShift's security policy are detected at install (docs/INSTALL.md, "Before you start"). Verified
+on RKE2 and on `kind`. OpenShift is expected to work (the pods leave their user IDs to its restricted
+policy, detected or `global.openshift=true`) but has not been the target of a real run yet; nor have
+EKS, GKE or AKS.
 
 A row moves to "verified" only when that version has actually been the target of a real run.
 
@@ -110,6 +116,6 @@ than one pod. In practice:
 Multi-replica hubs, with tunnels shared across pods, are on the roadmap. Until then this is a stated
 limit, not a configuration option: the chart refuses `replicaCount` other than 1.
 
-**Bundled Postgres is one pod with no scheduled backups** (only a dump before each upgrade). For production, use a managed Postgres or
+**Bundled Postgres is one pod with no backups of its own** (take a copy off the cluster before each upgrade). For production, use a managed Postgres or
 an operator such as CloudNativePG (`postgres.mode=external`; see "External Postgres" in
 [INSTALL.md](INSTALL.md#external-postgres)) so the database has its own replication and point-in-time recovery.

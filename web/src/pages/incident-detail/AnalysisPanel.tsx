@@ -3,10 +3,13 @@
 // the recent-changes list, and the AnalysisView card that assembles them —
 // split out of IncidentDetailPage.tsx (PROJECT.md P25) with no behavior
 // change. See that file's own header for the screen this panel belongs to.
-import { useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import type { UseMutationResult } from '@tanstack/react-query'
-import { getEvidence, ApiError } from '../../api/client'
+import { getEvidence, ApiError, PROBLEM_LLM_NOT_CONFIGURED } from '../../api/client'
+import { CAP_ORG_SETTINGS_WRITE } from '../../api/capabilities'
+import { useHasCapability } from '../../auth/useCapabilities'
 import type {
   Analysis,
   AnalysisStarted,
@@ -56,8 +59,38 @@ export function AnalyzeButton({
   runError?: string | null
 }) {
   const busy = mutation.isPending || investigating
+  const canSetUp = useHasCapability(CAP_ORG_SETTINGS_WRITE)
+  const failed = mutation.isError ? mutation.error : null
+  const showRunError = !busy && !failed && !!runError
+  // The failure floats under the button rather than in the row, so it never
+  // moves the header's other actions, and it can be put away. A new failure
+  // (a fresh attempt, or a different run error) shows it again.
+  const [dismissedFor, setDismissedFor] = useState<unknown>(null)
+  const failureKey = failed ? mutation.failureCount + ':' + mutation.submittedAt : showRunError ? runError : null
+  const calloutOpen = failureKey !== null && dismissedFor !== failureKey
+  useEffect(() => {
+    if (!calloutOpen) return
+    const escape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setDismissedFor(failureKey)
+    }
+    document.addEventListener('keydown', escape)
+    return () => document.removeEventListener('keydown', escape)
+  }, [calloutOpen, failureKey])
+
+  // Opens toward the side with room: from the button's right edge when the
+  // button sits near the right of the screen, as it does in the header.
+  const calloutRef = useRef<HTMLDivElement>(null)
+  const [alignEnd, setAlignEnd] = useState(false)
+  useLayoutEffect(() => {
+    const el = calloutRef.current
+    if (!calloutOpen || !el) return
+    const anchor = el.parentElement!.getBoundingClientRect()
+    setAlignEnd(anchor.left + el.offsetWidth > document.documentElement.clientWidth)
+  }, [calloutOpen, failureKey])
+
+  const noProvider = failed instanceof ApiError && failed.type === PROBLEM_LLM_NOT_CONFIGURED
   return (
-    <div>
+    <div className="analyze-control">
       {/* Filled only while analysis is the next move. Once there is one,
           the next move is the fix or the close-out, and the page allows one
           filled button per state (PROJECT.md UX1). */}
@@ -76,19 +109,47 @@ export function AnalyzeButton({
           BUTTON is disabled, not a load-bearing error, so this reads as a
           plain hint rather than `.form-error`. */}
       {disabledReason && <p className="field-hint">{disabledReason}</p>}
-      {mutation.isError && (
-        <p className="form-error inline-error" role="alert">
-          {mutation.error instanceof ApiError
-            ? mutation.error.detail
-              ? `${mutation.error.message} — ${mutation.error.detail}`
-              : mutation.error.message
-            : 'Something went wrong.'}
-        </p>
-      )}
-      {!busy && !mutation.isError && runError && (
-        <p className="form-error inline-error" role="alert">
-          {`The last analysis did not complete — ${runError}`}
-        </p>
+      {calloutOpen && (
+        <div ref={calloutRef} className={`anchored-callout${alignEnd ? ' anchored-callout-end' : ''}`} role="alert">
+          <div className="anchored-callout-body">
+            {noProvider ? (
+              <>
+                <strong>No AI provider is set up</strong>
+                <p>ARGUS needs one to investigate. Incidents are still detected without it.</p>
+                {canSetUp ? (
+                  <Link to="/settings?section=providers">Set up an AI provider</Link>
+                ) : (
+                  <p>Ask an administrator to add one in Settings → AI providers.</p>
+                )}
+              </>
+            ) : failed ? (
+              <>
+                <strong>The analysis could not start</strong>
+                <p>
+                  {failed instanceof ApiError
+                    ? failed.detail
+                      ? `${failed.message} — ${failed.detail}`
+                      : failed.message
+                    : 'Something went wrong.'}
+                </p>
+              </>
+            ) : (
+              <>
+                <strong>The last analysis did not complete</strong>
+                <p>{runError}</p>
+              </>
+            )}
+          </div>
+          <button
+            type="button"
+            className="link-button anchored-callout-close"
+            aria-label="Dismiss"
+            title="Dismiss"
+            onClick={() => setDismissedFor(failureKey)}
+          >
+            ×
+          </button>
+        </div>
       )}
     </div>
   )

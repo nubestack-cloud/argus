@@ -32,7 +32,8 @@ repository.
 | Resource | When |
 |---|---|
 | `argus-agent` Deployment under the read-only `argus-investigate` ServiceAccount | Always |
-| `ClusterRole` with list/get/watch only: no Secrets, no `pods/exec`, no write verb | Always |
+| `ClusterRole`s with get/list/watch only: no write verb, no Secret listing or contents, no `pods/exec` and no `*/proxy` | Always |
+| Read on every API group the cluster serves (CRDs included), minus `read.excludeApiGroups` | `read.allApiGroups` (the default) |
 | Identity `Secret`, readable and writable only by the agent | Always (`identity.mode=secret`) |
 | `argus-remediate` Deployment, ServiceAccount, namespace Roles and admission policies | `remediate.enabled` |
 | Node cordon/drain grant and its admission policy | `remediate.nodeOps.enabled` |

@@ -21,10 +21,11 @@ The first public release.
   auto-accept, for GitOps rollouts. Issue and revoke them from **Clusters → Fleet tokens**.
 - **Argo CD and Flux examples** for the hub and for the agent on every cluster (`deploy/examples/`).
 - **Values validation.** Both charts ship a `values.schema.json`, so a misspelt key fails the install.
-- **A database dump before every upgrade.** With the bundled Postgres, `helm upgrade` dumps the
-  database onto its own volume first, so an upgrade can be
-  [rolled back](docs/INSTALL.md#rolling-back-an-upgrade). There are no scheduled backups: for data you
-  must keep, use an external Postgres with its own backups.
+- **Upgrades only migrate.** `helm upgrade` runs the new release's migrations, each in one
+  transaction, and does nothing else to the database. The upgrade steps start with one command that
+  copies the bundled database off the cluster, which is also how an upgrade is
+  [rolled back](docs/INSTALL.md#rolling-back-an-upgrade). The chart takes no backups of its own: for
+  data you must keep, use an external Postgres with its own backups.
 - **This cluster's agent is installed with the hub**, enrolled and accepted automatically through a
   single-use token the hub registers for it (listed, and revocable, under Fleet tokens).
 - **Findings are kept 30 days on new installs** (Settings → General), so the database has a
@@ -47,13 +48,20 @@ The first public release.
 - The hub chart installs this cluster's agent, except where one is already installed.
 - `ingress.enabled` now defaults to `true` and renders only when `ingress.host` is set.
 - The database volume defaults to 10Gi. The nightly backup CronJob and its volume are gone; an old
-  backup volume is kept and can be deleted. Old `postgres.bundled.backup.*` keys are ignored.
+  backup volume is kept and can be deleted. `postgres.bundled.backup.*` keys are accepted and
+  ignored.
 - Unknown values keys are now rejected.
 
 See [Upgrading to 0.2.0](docs/INSTALL.md#upgrading-from-a-release-before-020) for the details.
 
 ### Fixed
 
+- **The install works on a cluster with no default StorageClass.** The bundled database's volume
+  uses the cluster default, else one of the cluster's StorageClasses, instead of waiting forever
+  for a volume nothing would create. With no StorageClass at all the database runs on a temporary
+  volume, and the install notes say so. An existing database's volume is never changed.
+- **A missing `ingress.clusterIssuer` stops the install** with the cluster's ClusterIssuers listed,
+  instead of an Ingress whose certificate never arrives.
 - **The sign-in page shows nothing about your installation.** Anyone who can reach it sees it before
   signing in, so the counters, charts and activity feed from the original designs are gone, along with
   the disabled Google / Entra ID / SAML buttons shown when no single sign-on provider is configured.

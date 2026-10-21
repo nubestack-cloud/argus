@@ -22,6 +22,11 @@ You need:
   with no DNS change.
 - optionally, cert-manager, to get HTTPS without handling certificates yourself.
 
+The database needs a volume. The chart uses the cluster's default StorageClass, or one of its
+StorageClasses if none is marked default. A cluster with no StorageClass at all still installs, but
+the database is then temporary and loses its data whenever its pod restarts (the install notes
+say so): fine for a trial, not for keeping anything.
+
 Decide two things now, because they are hard to change later:
 
 1. **How big the database should be.** The default is 10 GB, enough for a handful of clusters.
@@ -44,10 +49,17 @@ helm install argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --ve
 | Option | What to put |
 |---|---|
 | `ingress.host` | **Required.** The hub's hostname |
-| `ingress.clusterIssuer` | Your cert-manager ClusterIssuer, for HTTPS. No cert-manager? Leave it out, and either add `--set ingress.tls.enabled=true --set ingress.tls.secretName=<your TLS Secret>`, or use plain HTTP for a trial |
+| `ingress.clusterIssuer` | The name of a cert-manager ClusterIssuer in this cluster (`kubectl get clusterissuer`), for HTTPS. The install stops if there is none by that name. No cert-manager? Leave it out and add `--set ingress.tls.enabled=true --set ingress.tls.secretName=<your TLS Secret>` instead. **Plain HTTP, for a trial:** leave out both; the hub is then at `http://<host>`, and agents still encrypt their own connection inside it |
 | `ingress.className` | Only if the cluster has more than one ingress controller |
 | `postgres.bundled.persistence.size` | Only if you need more than 10Gi, for example `50Gi` |
-| `postgres.bundled.persistence.storageClass` | Only if the cluster has no default StorageClass, or you want a specific one |
+| `postgres.bundled.persistence.storageClass` | Only to choose a specific StorageClass. Without it, the chart uses the cluster default, or one of the cluster's StorageClasses if there is no default |
+
+The chart creates one Ingress for the web interface, the API and the agents' connection (a
+WebSocket at `/api/v1/agent/tunnel`). The ingress controller terminates HTTPS with the certificate
+cert-manager issues, or with your Secret; the agents' own mutual TLS runs inside the WebSocket, so
+it is unaffected. The controller must keep those connections open: the chart sets ingress-nginx's
+timeouts for you, and with any other controller, or a load balancer in front of it, allow idle
+connections of at least 60 seconds (agents send a heartbeat every 30).
 
 Wait for it to start. This takes about a minute, mostly downloading images:
 
@@ -135,7 +147,16 @@ ARGUS only watches at first. It changes nothing in a cluster until you
 
 1. Read the [changelog](../CHANGELOG.md) for every release since yours. Anything that needs your
    attention is listed there.
-2. Upgrade the hub:
+2. **Back up the database, off the cluster** (bundled Postgres). This file is your way back if the
+   upgrade goes wrong:
+
+   ```bash
+   kubectl -n argus-system exec argus-hub-postgres-0 -- pg_dump -U postgres -Fc argus > argus-before-upgrade.dump
+   ```
+
+   Keep it somewhere safe: it holds the hub's keys as well as its data. With an external database,
+   use your database's own backup or snapshot instead.
+3. Upgrade the hub:
 
    ```bash
    helm upgrade argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --version <new> \
@@ -143,10 +164,10 @@ ARGUS only watches at first. It changes nothing in a cluster until you
    kubectl -n argus-system rollout status deploy/argus-hub --timeout=10m
    ```
 
-   The upgrade saves a copy of the database first, so you can [roll back](#rolling-back-an-upgrade).
-   The hub then restarts once, for about 20 seconds; agents reconnect by themselves. The hub's own
-   cluster's agent is upgraded with it.
-3. Upgrade the agent in each of your other clusters, in any order:
+   The hub restarts once, for about 20 seconds, and applies the new release's database migrations
+   before it serves anything; each migration is one transaction, so a failed one changes nothing.
+   Agents reconnect by themselves, and the hub's own cluster's agent is upgraded with it.
+4. Upgrade the agent in each of your other clusters, in any order:
 
    ```bash
    helm --kube-context <ctx> upgrade argus-agent oci://registry-1.docker.io/nubestack/argus-agent-chart \
@@ -155,7 +176,7 @@ ARGUS only watches at first. It changes nothing in a cluster until you
 
    Or click **Upgrade agent** on the cluster's **Agent** tab, if that agent was installed with
    `selfUpgrade.enabled=true`.
-4. Check that every cluster is `Active` in **Clusters**, and that each **Agent** tab shows the new
+5. Check that every cluster is `Active` in **Clusters**, and that each **Agent** tab shows the new
    version.
 
 Two things to avoid: `--reuse-values` (it also keeps the old image versions, so nothing changes),
@@ -167,17 +188,15 @@ added again). An upgrade otherwise keeps every cluster connected.
 **An agent:** `helm --kube-context <ctx> rollback argus-agent -n argus-system`.
 
 **The hub** can only go back together with its database, because an upgrade changes the database
-to the new version. Restore the copy the upgrade saved, then roll back:
+to the new version. Restore the copy you took before upgrading, then roll back:
 
 ```bash
 P="kubectl -n argus-system exec argus-hub-postgres-0 --"
-$P ls -l /var/lib/postgresql/data/backups          # the newest argus-*.dump is the upgrade's copy
-DUMP=/var/lib/postgresql/data/backups/argus-YYYYMMDDTHHMMSSZ.dump
-
 kubectl -n argus-system scale deploy/argus-hub --replicas=0
 $P psql -U postgres -d postgres -c "ALTER DATABASE argus RENAME TO argus_before_rollback"
 $P createdb -U postgres argus
-$P pg_restore -U postgres -d argus --exit-on-error "$DUMP"
+kubectl -n argus-system exec -i argus-hub-postgres-0 -- \
+  pg_restore -U postgres -d argus --exit-on-error < argus-before-upgrade.dump
 helm -n argus-system rollback argus-hub
 ```
 
@@ -388,7 +407,7 @@ Postgres's shared memory (`postgres.bundled.sharedMemory`, 512Mi) counts against
 ## Uninstall
 
 `helm -n argus-system uninstall argus-hub` removes the hub and this cluster's agent but keeps the
-database (with its pre-upgrade dumps) and the generated Secrets, so a reinstall finds its data again. The agent's
+database and the generated Secrets, so a reinstall finds its data again. The agent's
 identity goes with it (an uninstall is a decommission), so before reinstalling, decommission the old
 `local` cluster in **Clusters**; the reinstalled agent then enrolls afresh. To remove everything:
 
@@ -405,10 +424,15 @@ cluster in **Clusters**.
 
 ## Troubleshooting
 
-**Hub stuck at `Init:0/2`, Postgres PVC `Pending`.** The cluster has no default StorageClass. Install
-one, delete the StatefulSet and the empty PVC
+**Hub stuck at `Init:0/2`, Postgres PVC `Pending`.** The StorageClass cannot create the volume:
+`kubectl -n argus-system describe pvc data-argus-hub-postgres-0` says why. Fix the storage, or choose
+another class: delete the StatefulSet and the empty PVC
 (`kubectl -n argus-system delete statefulset argus-hub-postgres; kubectl -n argus-system delete pvc data-argus-hub-postgres-0`),
 and upgrade with `--set postgres.bundled.persistence.storageClass=<class>`.
+
+**The browser warns about the certificate.** cert-manager has not issued it yet:
+`kubectl -n argus-system describe certificate argus-hub-tls` shows why. A ClusterIssuer that uses
+HTTP-01 needs the hub's hostname to be reachable from the internet.
 
 **`additional properties '<key>' not allowed`.** A values key is misspelt or misplaced; the message
 names it.

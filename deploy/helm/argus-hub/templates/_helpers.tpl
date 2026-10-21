@@ -96,8 +96,80 @@ mismatch or a hub that cannot reach its database.
 {{- if not (has .Values.postgres.mode (list "bundled" "external")) -}}
 {{- fail (printf "postgres.mode must be \"bundled\" or \"external\", got %q" .Values.postgres.mode) -}}
 {{- end -}}
+{{- if and .Values.ingress.clusterIssuer (include "argus-hub.ingressEnabled" .) (lookup "v1" "Namespace" "" "kube-system") -}}
+{{- /* lookup errors on a kind the cluster does not serve, so ask first */ -}}
+{{- $certManager := .Capabilities.APIVersions.Has "cert-manager.io/v1/ClusterIssuer" -}}
+{{- if or (not $certManager) (not (lookup "cert-manager.io/v1" "ClusterIssuer" "" .Values.ingress.clusterIssuer)) -}}
+{{- $issuers := list -}}
+{{- if $certManager -}}
+{{- range (lookup "cert-manager.io/v1" "ClusterIssuer" "" "").items -}}{{- $issuers = append $issuers .metadata.name -}}{{- end -}}
+{{- end -}}
+{{- if $issuers -}}
+{{- fail (printf "\n\ningress.clusterIssuer=%q: this cluster has no ClusterIssuer by that name, so the certificate would never be issued.\n\nIts ClusterIssuers: %s. Use one of them, or leave ingress.clusterIssuer out.\n" .Values.ingress.clusterIssuer (join ", " (sortAlpha $issuers))) -}}
+{{- else -}}
+{{- fail (printf "\n\ningress.clusterIssuer=%q: this cluster has no ClusterIssuers (is cert-manager installed?), so the certificate would never be issued.\n\nLeave ingress.clusterIssuer out, or set ingress.tls.enabled=true with ingress.tls.secretName=<your TLS Secret>.\n" .Values.ingress.clusterIssuer) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- if and (eq (toString .Values.cliRunner.enabled) "true") (not (include "argus-hub.cliRunnerCredentialSupplied" .)) -}}
 {{- fail "\n\ncliRunner.enabled=true needs a model credential.\n\nARGUS never ships one. Set cliRunner.modelCredential.anthropicApiKey, .claudeCodeOauthToken for a Claude subscription, .openaiApiKey for Codex, or point .existingSecret at a Secret holding the needed key.\n" -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Where the bundled database keeps its data, decided once so the StatefulSet and
+NOTES agree. Returns "<mode>:<storageClass>":
+
+  pvc:<class>        a volume of that class ("" = the cluster default)
+  picked:<class>     no class set and no cluster default, so the chart chose
+                     one of the cluster's StorageClasses rather than leave the
+                     volume Pending forever
+  ephemeral:<why>    no volume: persistence disabled ("disabled"), an existing
+                     database that was created without one ("existing"), or a
+                     cluster with no StorageClass at all ("none")
+
+An existing database always wins: its StatefulSet's volume template, or its
+volume left behind by an uninstall, so an upgrade or a reinstall never moves
+the data. Cluster lookups return nothing under `helm template` or a client
+dry run (no kube-system namespace is visible), and then the answer is the
+plain values.
+*/}}
+{{- define "argus-hub.postgresStorage" -}}
+{{- $fullname := include "argus-hub.fullname" . -}}
+{{- $p := .Values.postgres.bundled.persistence -}}
+{{- $sts := lookup "apps/v1" "StatefulSet" .Release.Namespace (printf "%s-postgres" $fullname) -}}
+{{- $pvc := lookup "v1" "PersistentVolumeClaim" .Release.Namespace (printf "data-%s-postgres-0" $fullname) -}}
+{{- if not $p.enabled -}}
+ephemeral:disabled
+{{- else if $sts -}}
+{{- $out := "ephemeral:existing" -}}
+{{- range $sts.spec.volumeClaimTemplates -}}
+{{- if eq .metadata.name "data" -}}{{- $out = printf "pvc:%s" (.spec.storageClassName | default "") -}}{{- end -}}
+{{- end -}}
+{{- $out -}}
+{{- else if $pvc -}}
+pvc:{{ $pvc.spec.storageClassName | default "" }}
+{{- else if $p.storageClass -}}
+pvc:{{ $p.storageClass }}
+{{- else if not (lookup "v1" "Namespace" "" "kube-system") -}}
+pvc:
+{{- else -}}
+{{- $default := "" -}}
+{{- $names := list -}}
+{{- range (lookup "storage.k8s.io/v1" "StorageClass" "" "").items -}}
+{{- $names = append $names .metadata.name -}}
+{{- $a := .metadata.annotations | default dict -}}
+{{- if or (eq (index $a "storageclass.kubernetes.io/is-default-class" | default "") "true") (eq (index $a "storageclass.beta.kubernetes.io/is-default-class" | default "") "true") -}}
+{{- $default = .metadata.name -}}
+{{- end -}}
+{{- end -}}
+{{- if $default -}}
+pvc:
+{{- else if $names -}}
+picked:{{ first (sortAlpha $names) }}
+{{- else -}}
+ephemeral:none
+{{- end -}}
 {{- end -}}
 {{- end -}}
 

@@ -596,13 +596,11 @@ rebuilt — `npm run build` alone changes nothing a browser sees.
 
 ## Backup, restore, and disaster recovery
 
-ARGUS does not ship a backup tool of its own — Postgres already has one. The one convenience is the
-hub chart's optional `postgres.bundled.backup` (off by default): a CronJob that runs plain `pg_dump -Fc`
-and `pg_dumpall --roles-only` against the *bundled* Postgres into a PVC, keeping the newest
-`retention` of each. It is a floor for a bundled install, not the production path — same cluster,
-usually the same storage, no WAL archiving, so a restore loses everything since the last run.
-External/managed Postgres with its own backup policy is the production path
-(`docs/INSTALL.md`, "Storage"). What this section owns is the part that
+ARGUS does not ship a backup tool of its own, and the hub chart takes no backups: Postgres already
+has the tools, and a copy on the database's own volume is not a backup. Before an upgrade of the
+bundled Postgres, the operator streams a `pg_dump -Fc` off the cluster (`docs/INSTALL.md`,
+"Upgrading"). External/managed Postgres with its own backup policy is the production path
+(`docs/INSTALL.md`, "External Postgres"). What this section owns is the part that
 is *specific to ARGUS*: what else besides the database has to come back with it, and **exactly what
 stops working when you restore from a point before the hub's current key material** — because the hub
 keeps its signing keys, its CA and its secret-encryption key *in the database itself*
@@ -702,13 +700,12 @@ If any of those says `generated and persisted a new ...` instead, `signing_keys`
 the hub has just minted a brand-new cryptographic identity, and every consequence in the next section
 has happened to your live fleet rather than to a backup.
 
-### The bundled Postgres's pre-upgrade dump (Helm)
+### The copy taken before an upgrade (Helm)
 
-The hub chart takes no scheduled backups. Before every `helm upgrade` a hook Job, scheduled onto the
-Postgres pod's node, writes a verified `pg_dump -Fc` to `backups/argus-<UTC timestamp>.dump` on the
-database's own volume (beside `pgdata/`) and keeps the newest `postgres.bundled.backup.keep` (2).
-**Every dump holds all five keys above.** Restoring it to roll an upgrade back is `docs/INSTALL.md`
-("Rolling back an upgrade"); the consequences below apply to it like to any restore.
+The hub chart takes no backups. The install guide's upgrade steps start with a `pg_dump -Fc` of the
+bundled Postgres streamed to the operator's machine, off the cluster. **That file holds all five keys
+above.** Restoring it to roll an upgrade back is `docs/INSTALL.md` ("Rolling back an upgrade"); the
+consequences below apply to it like to any restore.
 
 ### What breaks on a restore from before the current key material
 

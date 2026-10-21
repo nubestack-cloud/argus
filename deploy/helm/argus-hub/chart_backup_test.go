@@ -1,9 +1,8 @@
 package argushubchart
 
-// The bundled Postgres has no scheduled backup: only a dump before each
-// `helm upgrade`, onto the database's own volume, so a bad upgrade can be
-// rolled back. That hook needs a live release (it looks the StatefulSet up),
-// so it is proven on a cluster; these check what rendering alone can.
+// The bundled Postgres has no backup machinery at all: no CronJob, no second
+// volume, and no pre-upgrade dump Job. Before an upgrade the operator takes a
+// copy off the cluster (docs/INSTALL.md, "Upgrading").
 
 import (
 	"os"
@@ -14,33 +13,31 @@ import (
 	"testing"
 )
 
-// No CronJob, no second volume, no Job to bind one.
-func TestNoScheduledBackup(t *testing.T) {
-	out := renderMinimal(t, "argus-hub", "--set", "ingress.host=argus.example.org")
-	for _, unwanted := range []string{"kind: CronJob", "name: argus-hub-postgres-backup\n", "postgres-backup-bind"} {
+func TestNoBackupObjects(t *testing.T) {
+	out := renderMinimal(t, "argus-hub", "--set", "ingress.host=argus.example.org", "--is-upgrade")
+	for _, unwanted := range []string{"kind: CronJob", "kind: Job", "postgres-backup", "helm.sh/hook"} {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("rendered %q", unwanted)
 		}
 	}
-	if strings.Contains(out, "postgres-backup-pre-upgrade") {
-		t.Error("the pre-upgrade backup rendered outside an upgrade of a live release")
-	}
 }
 
-// A values file written for the old nightly backup still installs: its keys
-// are accepted and ignored.
+// A values file written for either earlier backup (the nightly CronJob, then
+// the pre-upgrade dump) still installs: its keys are accepted and ignored.
 func TestOldBackupValuesAreAccepted(t *testing.T) {
 	renderMinimal(t, "argus-hub", "--set", "ingress.host=argus.example.org",
 		"--set", "postgres.bundled.backup.enabled=true",
 		"--set", "postgres.bundled.backup.schedule=0 3 * * *",
-		"--set", "postgres.bundled.backup.persistence.size=5Gi")
+		"--set", "postgres.bundled.backup.persistence.size=5Gi",
+		"--set", "postgres.bundled.backup.beforeUpgrade=true",
+		"--set", "postgres.bundled.backup.keep=2")
 }
 
-// The notes say there is no backup policy, and where the way back from an
-// upgrade is.
+// The notes say there are no backups, and where the copy before an upgrade
+// comes from.
 func TestPostgresBackupNotes(t *testing.T) {
 	notes := helmInstallNotes(t)
-	for _, want := range []string{"No scheduled backups", "Before every helm upgrade", "Rolling back an upgrade", "postgres.mode=external"} {
+	for _, want := range []string{"No backups", "take a copy off the cluster", "postgres.mode=external"} {
 		if !strings.Contains(notes, want) {
 			t.Errorf("NOTES lack %q:\n%s", want, notes)
 		}

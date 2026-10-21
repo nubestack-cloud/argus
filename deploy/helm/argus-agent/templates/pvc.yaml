@@ -1,0 +1,34 @@
+{{- if not (include "argus-agent.skip" .) }}
+{{- if .Values.persistence.enabled }}
+# BUGS.md 128: backs the `agent-data` volume (templates/deployment.yaml)
+# with a real PersistentVolumeClaim instead of an emptyDir, when the
+# operator has opted in via persistence.enabled (values.yaml) because this
+# specific cluster is known to provision a usable StorageClass. Rendered
+# only when opted in — this chart still defaults to emptyDir, since it
+# cannot assume a StorageClass exists across a fleet of 200+ heterogeneous
+# target clusters (values.yaml's `persistence` comment).
+#
+# One PVC, not templated per-replica: replicaCount is always 1 (exactly one
+# agent per cluster, per this chart's own Deployment strategy comment), and
+# the Deployment's `Recreate` strategy already guarantees the old Pod is
+# fully gone before a new one starts, so there is never a moment where two
+# Pods need this claim at once — ReadWriteOnce (values.yaml's default
+# accessModes) is exactly right here, not a limitation.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: argus-agent-data
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.accessModes | nindent 4 }}
+  {{- with include "argus-agent.storageClass" . }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size | quote }}
+{{- end }}
+{{- end }}

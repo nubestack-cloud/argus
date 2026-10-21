@@ -1,0 +1,8 @@
+.DS_Store
+.git/
+.gitignore
+*.swp
+*.tmp
+
+# The chart's own Go tests live beside it; they are not part of the chart.
+*.go

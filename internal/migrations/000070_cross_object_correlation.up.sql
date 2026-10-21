@@ -1,0 +1,88 @@
+-- Cross-object correlation — BACKLOG.md's A3b, the harder remaining half of
+-- the "Noise and correlation" theme after A1 (object-level, migration
+-- 000036) and A3a (replica-level, migration 000042) both landed.
+--
+-- THE PROBLEM, MEASURED (CAPABILITIES.md §5): a PersistentVolumeClaim stuck
+-- Pending and the Service whose backing workload never started because of
+-- it produced 2 incidents for what is structurally ONE outage —
+-- `apps/softpack-frontend-spack-cache` (PVCPendingTimeout) and
+-- `apps/softpack-frontend` (ServiceNoEndpoints). Neither A1 (they are
+-- different objects, so object_key correctly differs) nor A3a (neither
+-- object IS the Pod whose OwnerReferences chain resolves a workload — a PVC
+-- and a Service are each referenced BY a Pod, not owned by one) can touch
+-- this: it needs a reference graph Kubernetes itself does not maintain —
+-- unlike OwnerReferences, nothing in the API server tracks "which Pods does
+-- this Service's selector match" or "which Pods mount this PVC" as a
+-- queryable relationship.
+--
+-- THE FIX: internal/agent/objectref.go resolves both reference patterns
+-- agent-side (selector-based: a Service's spec.selector to the Pods it
+-- targets; volume-reference-based: a Pod's
+-- spec.volumes[*].persistentVolumeClaim.claimName to the PVC it mounts),
+-- cheaply and only for objects already flagged as broken — see that file's
+-- doc comment for the full cost argument. It resolves the matching Pod(s)'
+-- own OWNING WORKLOAD (the same resolveWorkloadFromOwnerRefs walk A3a
+-- already uses), and the hub joins that into the below columns exactly like
+-- migration 000042 already does for WorkloadGVK/WorkloadName — same split,
+-- same "agent supplies raw identity, hub computes the display key"
+-- discipline as migration 000036 established first.
+--
+-- TWO NEW COLUMNS, both nullable, both set ONCE at incident creation
+-- (mirroring workload_key/opening_reason's own "set at creation, never
+-- updated afterward" semantics — migration 000042's header):
+--
+--   related_workload_key   "<ownerGVK>|<namespace>|<ownerName>" of a
+--                           workload this incident's OWN object (a PVC, a
+--                           Service) is NOT part of, but references or is
+--                           referenced by. Computed hub-side by
+--                           internal/gateway/finding.go's
+--                           relatedWorkloadCorrelationKey, from
+--                           Finding.RelatedWorkloadGVK/RelatedWorkloadName
+--                           (internal/tunnel/protocol.go).
+--
+--                           Deliberately a SEPARATE column from
+--                           workload_key, not a reuse of it, even though
+--                           both ultimately hold the identical
+--                           "<gvk>|<ns>|<name>" shape: workload_key is a
+--                           MERGE tier (internal/gateway/finding.go's
+--                           correlationIdentity — two Findings sharing a
+--                           workload_key land on the SAME incident) and
+--                           A3b's design brief is explicit that
+--                           cross-object correlation must stay
+--                           read-only/display-only. Writing a PVC's or a
+--                           Service's finding into workload_key would
+--                           silently fold it into the Pod's own incident —
+--                           exactly the merge A1/A3a's own history shows
+--                           this codebase deliberately does NOT want for
+--                           two objects that can each independently be
+--                           fixed (a PVC can be deleted/replaced without
+--                           touching the Service, and vice versa).
+--
+--   object_group_id        Set/cleared/merged by internal/objectgroup.
+--                           Recompute — never written anywhere else. Shared
+--                           between: (a) any currently-open incident whose
+--                           OWN workload_key equals some value X (a Pod's
+--                           incident), and (b) any currently-open incident
+--                           whose related_workload_key equals that SAME X
+--                           (a PVC's or Service's incident that resolved to
+--                           the same workload). Exactly the fleet_group_id/
+--                           workload_group_id shape (migrations 000005,
+--                           000042), re-scoped again: DISPLAY only, and it
+--                           never merges incident state, findings, or
+--                           lifecycle — a PVC that gets fixed while its
+--                           Service incident doesn't (or vice versa) must
+--                           stay independently trackable.
+ALTER TABLE incidents ADD COLUMN related_workload_key text;
+ALTER TABLE incidents ADD COLUMN object_group_id text;
+
+-- Same shape as migrations 000005/000042's own group-id indexes: only
+-- meaningful for the (typically small) set of currently-grouped incidents,
+-- so a partial index costs little and serves both the read
+-- (GET /incidents?objectGroupId=) and Recompute's own UPDATE.
+CREATE INDEX incidents_object_group_idx ON incidents (object_group_id) WHERE object_group_id IS NOT NULL;
+
+-- internal/objectgroup.Recompute's read query filters on
+-- (cluster_id, workload_key OR related_workload_key, state) — this index
+-- serves the related_workload_key half of that OR (the plain workload_key
+-- half is already served by migration 000042's incidents_workload_key_idx).
+CREATE INDEX incidents_related_workload_key_idx ON incidents (cluster_id, related_workload_key) WHERE related_workload_key IS NOT NULL;

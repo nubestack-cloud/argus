@@ -1,0 +1,80 @@
+# E14 lifecycle matrix, row 7 — a fault detected by the OLD hardcoded-kind path
+# (not one of E11's kind-agnostic predicates) reaching an IN-PLACE
+# (non-PR) remediation.
+# Campaign context and the full row inventory: README.md in this directory.
+#
+# Why this row is distinct from rows 1-4: those all exercise either the
+# warning-events detector on a scheduling failure (rows 1/2) or an E10
+# declarative rule / E11 kind-agnostic predicate (rows 3/4). This row
+# exercises the OTHER long-standing path — internal/agent's Pod-conditions
+# detector / hand-written sweep checkers that predate E11 entirely,
+# reacting to a CrashLoopBackOff — and, unlike rows 5/6, the fix this
+# fault wants is a plain in-place action (RestartPod / PatchResourceLimits
+# through the ordinary human-approval flow), never a pull request, because
+# nothing here is GitOps-owned. This is the "boring, well-trodden" lifecycle
+# path that the newer kind-agnostic work must not have quietly broken.
+#
+# Fixture: a Deployment whose container exits non-zero immediately after
+# a short delay, forcing a real CrashLoopBackOff with mounting restart
+# count and BackOff Warning events — not a synthetic Reason string.
+#
+# Usage:
+#   kubectl apply -f row07-crashloop-old-rule-inplace-fix.yaml
+#   kubectl -n e14-row07 get pods -w   # watch restart count climb, CrashLoopBackOff
+#   kubectl -n e14-row07 describe pod -l app=row07-crashloop | tail -15
+#   kubectl delete -f row07-crashloop-old-rule-inplace-fix.yaml
+#
+# LIVE RUN, 2026-09-03, rke2: full end-to-end evidence —
+# real CrashLoopBackOff -> BackOff Warning Event -> the old pod-conditions
+# detector -> incident inc_01m1mnqrca69v1h92adjp9tdzm (severity high) ->
+# C12 auto-analysis (an_01m1mns8vzz8v0wnpsrvjprg8z, triggered_by=auto,
+# confidence 1.00, 14 iterations) within ~35s of detection. The old
+# mechanism is NOT broken. BUT: this exact fixture does not reach the
+# "human approves RestartPod/PatchResourceLimits" half this row's own
+# description predicted — the model correctly diagnosed the container's
+# command (`sleep 5; exit 1`) as ALWAYS failing regardless of restart, said
+# so explicitly ("intentional test workload... not a production failure"),
+# and correctly proposed NO typed plan, because none of RestartPod (a
+# no-op forever-crashlooping command restarts into the same failure),
+# PatchResourceLimits (this isn't a resource fault) or RevertContainerImage
+# (revision 1, nothing earlier to revert to) actually fixes a permanently-
+# broken command — landing on NeedsHumanInvestigation rather than
+# AwaitingApproval. This is a correct, honest decline, not a bug — but it
+# means a genuinely TRANSIENT/self-healing crashloop (e.g. one that
+# succeeds after N restarts, or an OOMKill fixable by PatchResourceLimits)
+# is a better fixture than this one for actually exercising the in-place
+# approval+execution flow end to end; that variant was not built this
+# pass (time-boxed), and is the natural next step if this row is revisited.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e14-row07
+  labels:
+    e14-lifecycle-matrix: "true"
+    e14-row: "row07-crashloop-old-rule-inplace-fix"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: row07-crashloop
+  namespace: e14-row07
+  labels:
+    app: row07-crashloop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: row07-crashloop
+  template:
+    metadata:
+      labels:
+        app: row07-crashloop
+    spec:
+      containers:
+        - name: crasher
+          image: busybox:1.36
+          command: ["sh", "-c", "echo starting; sleep 5; echo dying now; exit 1"]
+          resources:
+            requests:
+              cpu: "25m"
+              memory: "16Mi"

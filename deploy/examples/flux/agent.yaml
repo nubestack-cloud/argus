@@ -1,0 +1,42 @@
+# The ARGUS agent in one cluster, by Flux. Commit it to each watched cluster's
+# Flux path (a Kustomization overlay can set displayName per cluster), but not
+# the hub's own cluster: the hub chart installs its agent there.
+#
+# The fleet token comes from ARGUS (Clusters -> Fleet tokens) and must exist
+# in the cluster as the Secret argus-system/argus-enrollment-token (key:
+# token), created by your secret manager (External Secrets, SOPS, Vault).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argus-system
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: argus-agent-chart
+  namespace: argus-system
+spec:
+  interval: 1h
+  url: oci://registry-1.docker.io/nubestack/argus-agent-chart
+  ref:
+    tag: 0.2.0
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: argus-agent
+  namespace: argus-system
+spec:
+  interval: 1h
+  chartRef:
+    kind: OCIRepository
+    name: argus-agent-chart
+  values:
+    hub:
+      apiUrl: https://argus.example.com     # CHANGE: the hub's URL
+    enrollment:
+      tokenSecretRef:
+        name: argus-enrollment-token
+    displayName: prod-eu-1                  # CHANGE: this cluster's name in ARGUS
+    namespace:
+      create: false

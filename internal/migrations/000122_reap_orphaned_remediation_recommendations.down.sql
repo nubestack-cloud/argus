@@ -1,0 +1,17 @@
+-- Deliberately empty, for the reason migration 000120's down file is, and
+-- 000107's and 000092's before it: this migration changes no schema at all. It
+-- is a data correction, and the rows it removed were remediation
+-- recommendations, executions and execution attempts for incidents AND
+-- clusters that no longer exist. Re-inserting them would not be a rollback; it
+-- would be re-creating the defect, and there is nothing left to reconstruct
+-- them from in any case.
+--
+-- A rollback of 000122 therefore leaves the schema exactly as 000121 left it,
+-- which is the property `migrate down` has to preserve. Nothing after this
+-- point depends on those rows existing: every read path in the product reaches
+-- a recommendation by joining through its incident, and these had none.
+--
+-- SELECT rather than a bare comment so the file is a valid, non-empty
+-- statement for golang-migrate and cannot be mistaken for a truncated or
+-- half-written migration.
+SELECT 1;

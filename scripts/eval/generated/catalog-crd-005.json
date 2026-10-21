@@ -1,0 +1,89 @@
+{
+  "id": "catalog-crd-005",
+  "description": "CRDs, finalizers, garbage collection: Structural schema validation rejecting valid CRs. Catalogue entry CRD-005 (category AA, rank 20 of the catalogue's categories by size, 22 entries; silent=false, risk=medium, channels=pullRequest). Selected because it filled the least-covered (risk, channel) cell medium/pullRequest. Correct answer: a statement naming one of the catalogue's candidate root causes for this signal (Stricter schema; x-kubernetes-preserve-unknown-fields removed).",
+  "provenance": "synthesized-from-catalog",
+  "catalogId": "CRD-005",
+  "category": "AA",
+  "categoryName": "CRDs, finalizers, garbage collection",
+  "limitation": "Synthesized from issue-catalog metadata, not from recorded cluster output: the toolResponses below present this entry's STATED signals through the real tool surface. This case grades whether the investigation maps a known signal to one of the catalogue's candidate root causes. It does not prove anything about behaviour on a real cluster, and a green score on it must not be read as cluster coverage.",
+  "finding": {
+    "detectorId": "k8s-sweep",
+    "severity": "high",
+    "namespace": "eval-aa",
+    "objectName": "crd-005-abb26",
+    "reason": "SweepObservation",
+    "message": "Structural schema validation rejecting valid CRs — Apply errors after a CRD upgrade",
+    "occurrenceCount": 1
+  },
+  "toolResponses": {
+    "describe_resource": [
+      {
+        "data": {
+          "events": [],
+          "object": {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+              "name": "crd-005-abb26",
+              "namespace": "eval-aa"
+            },
+            "status": {
+              "conditions": [
+                {
+                  "message": "Apply errors after a CRD upgrade",
+                  "reason": "SweepObservation",
+                  "status": "False",
+                  "type": "Ready"
+                }
+              ],
+              "phase": "Pending"
+            }
+          }
+        }
+      }
+    ],
+    "get_events": [
+      {
+        "data": []
+      }
+    ],
+    "get_gitops_ownership": [
+      {
+        "data": {
+          "app_ref": {
+            "name": "aa-app",
+            "namespace": "argocd"
+          },
+          "managed_by": "argocd"
+        }
+      }
+    ],
+    "get_logs": [
+      {
+        "data": {
+          "lines": []
+        }
+      }
+    ],
+    "get_owner_chain": [
+      {
+        "data": []
+      }
+    ],
+    "list_resources": [
+      {
+        "data": []
+      }
+    ]
+  },
+  "expected": {
+    "type": "definite",
+    "anyOfKeywords": [
+      "removed",
+      "stricter"
+    ],
+    "minConfidence": 0.5,
+    "minIterations": 2,
+    "maxIterations": 8
+  }
+}

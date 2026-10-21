@@ -1,0 +1,44 @@
+-- Persist who manages an incident's object, so "this fix will be reverted" can
+-- actually be shown.
+--
+-- WHY THIS COLUMN EXISTS AT ALL
+--
+-- ARGUS can patch a live object, but if a Helm release or an Argo CD/Flux
+-- controller owns it, the next upgrade or reconcile overwrites the patch and the
+-- problem returns with no indication that this was always going to happen. On
+-- the fleet this is tested against, the applications are Helm-managed, so that
+-- is the normal case rather than an edge case.
+--
+-- The ownership fact was already reachable — get_gitops_ownership is a working
+-- investigation tool — but only by scraping it out of an analysis's recorded
+-- causal chain, i.e. only when the MODEL happened to ask. Two problems with
+-- that, both found by checking against the real cluster rather than by testing:
+--
+--   1. The cli investigator backend records no causal chain at all (it does not
+--      own its loop, and inventing one would look like evidence), so ownership
+--      was permanently null on any install using it.
+--   2. Even on the api backend it depended on the model's curiosity. Whether a
+--      chart owns a Deployment is a fact about the object, not a function of
+--      what the model chose to look at, and a safety-relevant caveat must not
+--      appear or vanish based on that.
+--
+-- So the hub now determines it directly, once per analysis, and stores it here.
+--
+-- WHY ON incidents AND NOT ON analyses
+--
+-- Ownership is a property of the OBJECT, and since migration 000036 the incident
+-- is the thing that identifies an object (incidents.object_key). Hanging it off
+-- analyses would duplicate the same fact per re-analysis and leave the question
+-- "who owns this?" unanswerable for an incident nobody has analysed yet.
+--
+-- jsonb rather than columns: this stores the tool's own result shape
+-- (managed_by plus an optional app_ref of kind/name/namespace), and that shape
+-- belongs to lld/07 §2's tool contract. Flattening it into typed columns would
+-- fix a wire contract into the schema and require a migration every time the
+-- tool learns to recognise another controller — which it just did, gaining
+-- plain-Helm detection alongside Argo CD and Flux.
+--
+-- NULL means "not determined", which is deliberately distinct from a stored
+-- {"managed_by":"none"} meaning "asked, and nothing owns it". Only the latter
+-- justifies telling an operator an in-place fix will stick.
+ALTER TABLE incidents ADD COLUMN ownership jsonb;

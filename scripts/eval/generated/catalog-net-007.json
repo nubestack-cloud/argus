@@ -1,0 +1,86 @@
+{
+  "id": "catalog-net-007",
+  "description": "kube-proxy, CNI, NetworkPolicy: Pod IP pool (IPAM) exhausted. Catalogue entry NET-007 (category O, rank 10 of the catalogue's categories by size, 30 entries; silent=false, risk=high, channels=external). Selected because it filled the least-covered (risk, channel) cell high/guidance. Correct answer: a statement naming one of the catalogue's candidate root causes for this signal (Node CIDR too small (--node-cidr-mask-size); Cluster CIDR exhausted; Leaked IPs from crashed pods; ENI/prefix limits on cloud CNIs).",
+  "provenance": "synthesized-from-catalog",
+  "catalogId": "NET-007",
+  "category": "O",
+  "categoryName": "kube-proxy, CNI, NetworkPolicy",
+  "limitation": "Synthesized from issue-catalog metadata, not from recorded cluster output: the toolResponses below present this entry's STATED signals through the real tool surface. This case grades whether the investigation maps a known signal to one of the catalogue's candidate root causes. It does not prove anything about behaviour on a real cluster, and a green score on it must not be read as cluster coverage.",
+  "finding": {
+    "detectorId": "k8s-sweep",
+    "severity": "critical",
+    "namespace": "eval-o",
+    "objectName": "net-007-a942c",
+    "reason": "SweepObservation",
+    "message": "Pod IP pool (IPAM) exhausted — failed to allocate IP / no IP addresses available in range",
+    "occurrenceCount": 1
+  },
+  "toolResponses": {
+    "describe_resource": [
+      {
+        "data": {
+          "events": [],
+          "object": {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+              "name": "net-007-a942c",
+              "namespace": "eval-o"
+            },
+            "status": {
+              "conditions": [
+                {
+                  "message": "failed to allocate IP / no IP addresses available in range",
+                  "reason": "SweepObservation",
+                  "status": "False",
+                  "type": "Ready"
+                }
+              ],
+              "phase": "Pending"
+            }
+          }
+        }
+      }
+    ],
+    "get_events": [
+      {
+        "data": []
+      }
+    ],
+    "get_gitops_ownership": [
+      {
+        "data": {
+          "managed_by": "none"
+        }
+      }
+    ],
+    "get_logs": [
+      {
+        "data": {
+          "lines": []
+        }
+      }
+    ],
+    "get_owner_chain": [
+      {
+        "data": []
+      }
+    ],
+    "list_resources": [
+      {
+        "data": []
+      }
+    ]
+  },
+  "expected": {
+    "type": "definite",
+    "anyOfKeywords": [
+      "cidr",
+      "leaked",
+      "limits"
+    ],
+    "minConfidence": 0.5,
+    "minIterations": 2,
+    "maxIterations": 8
+  }
+}

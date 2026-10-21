@@ -1,0 +1,49 @@
+{{- if include "argus-hub.ingressEnabled" . }}
+{{- $fullname := include "argus-hub.fullname" . }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}
+  labels: {{- include "argus-hub.labels" . | nindent 4 }}
+  {{- /*
+    Long upstream timeouts for ingress-nginx: the agent tunnel and the
+    live-events stream are long-lived WebSockets, which ingress-nginx cuts
+    after 60s of silence by default. Both send traffic well inside this window
+    (tunnel heartbeats, event-stream pings every 25s), so the timeout only
+    bounds a peer that has really gone. Harmless to other controllers;
+    ingress.annotations overrides either key.
+  */}}
+  {{- $timeout := add (int .Values.analysis.timeLimitSeconds) 60 | toString }}
+  {{- $defaults := dict "nginx.ingress.kubernetes.io/proxy-read-timeout" $timeout "nginx.ingress.kubernetes.io/proxy-send-timeout" $timeout }}
+  {{- with .Values.ingress.clusterIssuer }}
+  {{- $_ := set $defaults "cert-manager.io/cluster-issuer" . }}
+  {{- end }}
+  annotations:
+    {{- /* quoted one by one: annotations must be strings, and a numeric --set would otherwise render bare and be rejected */}}
+    {{- range $k, $v := merge (deepCopy .Values.ingress.annotations) $defaults }}
+    {{ $k | quote }}: {{ $v | toString | quote }}
+    {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- if include "argus-hub.ingressTLS" . }}
+  tls:
+    - hosts: [{{ .Values.ingress.host | quote }}]
+      secretName: {{ .Values.ingress.tls.secretName | default (printf "%s-tls" $fullname) | quote }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          # The API port, which also serves the agent tunnel as a WebSocket
+          # (/api/v1/agent/tunnel). The tunnel's mTLS runs inside that socket,
+          # so terminating TLS here leaves it intact.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}
+                port:
+                  number: {{ .Values.api.service.port }}
+{{- end }}

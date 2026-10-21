@@ -1,0 +1,58 @@
+{
+  "id": "crashloop-oom-clear",
+  "description": "Obvious case: a single unambiguous OOMKilled event plus a corroborating log line. Any reasonable investigation should land on this confidently.",
+  "finding": {
+    "detectorId": "pod-status",
+    "severity": "critical",
+    "namespace": "prod",
+    "objectName": "payments-api-7f8b9c9c8d-x2kq1",
+    "reason": "OOMKilled",
+    "message": "Container payments-api in pod payments-api-7f8b9c9c8d-x2kq1 was OOMKilled",
+    "occurrenceCount": 6
+  },
+  "toolResponses": {
+    "get_events": [
+      {
+        "match": {},
+        "data": [
+          {
+            "namespace": "prod",
+            "involvedObjectKind": "Pod",
+            "involvedObjectName": "payments-api-7f8b9c9c8d-x2kq1",
+            "reason": "OOMKilled",
+            "message": "Container payments-api was OOMKilled after exceeding its memory limit",
+            "type": "Warning",
+            "count": 6,
+            "lastTimestamp": "2026-08-19T10:00:00Z"
+          }
+        ]
+      }
+    ],
+    "get_logs": [
+      {
+        "match": {},
+        "data": {
+          "lines": [
+            "level=info msg=\"starting payments-api\"",
+            "level=warn msg=\"heap usage climbing rapidly, approaching container memory limit\"",
+            "Killed process 1 (payments-api) total-vm:914232kB, anon-rss:262112kB — OOM killed"
+          ]
+        }
+      }
+    ],
+    "get_gitops_ownership": [
+      {
+        "match": {},
+        "data": { "managed_by": "none" }
+      }
+    ]
+  },
+  "expected": {
+    "type": "definite",
+    "requiredKeywords": ["oomkilled"],
+    "forbiddenKeywords": [],
+    "minConfidence": 0.5,
+    "minIterations": 3,
+    "maxIterations": 5
+  }
+}

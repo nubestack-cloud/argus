@@ -1,0 +1,73 @@
+{
+  "id": "catalog-app-001",
+  "description": "Application-level failures, surfaced via Kubernetes: Memory leak. Catalogue entry APP-001 (category AJ, rank 7 of the catalogue's categories by size, 32 entries; silent=true, risk=low, channels=guidance). Selected because it filled the least-covered (risk, channel) cell low/guidance; polarity fell back to silent=true — the category had no gradable entry of the assigned polarity. Correct answer: an honest \"could not determine\" at low confidence — every probe this fixture answers comes back clean, which is what makes this a silent fault, and naming a cause off the catalogue's list anyway would be a guess the evidence does not support.",
+  "provenance": "synthesized-from-catalog",
+  "catalogId": "APP-001",
+  "category": "AJ",
+  "categoryName": "Application-level failures, surfaced via Kubernetes",
+  "limitation": "Synthesized from issue-catalog metadata, not from recorded cluster output: the toolResponses below present this entry's STATED signals through the real tool surface. This case grades whether the investigation maps a known signal to one of the catalogue's candidate root causes. It does not prove anything about behaviour on a real cluster, and a green score on it must not be read as cluster coverage.",
+  "finding": {
+    "detectorId": "k8s-sweep",
+    "severity": "medium",
+    "namespace": "eval-aj",
+    "objectName": "app-001-0c4ab",
+    "reason": "SweepObservation",
+    "message": "Memory leak — Steadily rising RSS, periodic OOMKill",
+    "occurrenceCount": 6
+  },
+  "toolResponses": {
+    "describe_resource": [
+      {
+        "data": {
+          "events": [],
+          "object": {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+              "name": "app-001-0c4ab",
+              "namespace": "eval-aj"
+            },
+            "status": {
+              "phase": "Running"
+            }
+          }
+        }
+      }
+    ],
+    "get_events": [
+      {
+        "data": []
+      }
+    ],
+    "get_gitops_ownership": [
+      {
+        "data": {
+          "managed_by": "none"
+        }
+      }
+    ],
+    "get_logs": [
+      {
+        "data": {
+          "lines": []
+        }
+      }
+    ],
+    "get_owner_chain": [
+      {
+        "data": []
+      }
+    ],
+    "list_resources": [
+      {
+        "data": []
+      }
+    ]
+  },
+  "expected": {
+    "type": "insufficient",
+    "maxConfidenceForInsufficient": 0.4,
+    "minIterations": 2,
+    "maxIterations": 8
+  }
+}

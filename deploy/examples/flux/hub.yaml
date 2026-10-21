@@ -1,0 +1,34 @@
+# The ARGUS hub, installed and upgraded by Flux.
+#
+# Change the two marked values and commit this file to a path a Flux
+# Kustomization reconciles. Upgrading is changing the OCIRepository's tag.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argus-system
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: argus-hub-chart
+  namespace: argus-system
+spec:
+  interval: 1h
+  url: oci://registry-1.docker.io/nubestack/argus-hub-chart
+  ref:
+    tag: 0.2.0
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: argus-hub
+  namespace: argus-system
+spec:
+  interval: 1h
+  chartRef:
+    kind: OCIRepository
+    name: argus-hub-chart
+  values:
+    ingress:
+      host: argus.example.com          # CHANGE: where the hub is reached
+      clusterIssuer: letsencrypt       # CHANGE: your cert-manager ClusterIssuer, or remove

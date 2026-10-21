@@ -1,0 +1,25 @@
+-- BACKLOG.md D9 finding U6: PullRequestRecord (the incident detail page)
+-- rendered "#63" with no way to click through to the pull request it names —
+-- an operator waiting on a merge had the number and nothing else. The
+-- provider returns a real URL the moment it opens the pull request
+-- (internal/scm.PullRequest.URL, github.go's HTMLURL / gitlab.go's web_url),
+-- and both callers already had it in hand (approveByOpeningPullRequest's
+-- proposal.PullRequest.URL, repository_change.go's identical field) — it was
+-- logged on failure but never persisted for a client to read back.
+--
+-- ON INCIDENTS, same reasoning migrations 000058/000059/000060 already give
+-- for every other pr_* column: a pull request can open via either
+-- approveByOpeningPullRequest or the self-service handleOpenRepositoryChange
+-- route, and the incident is the one thing both are guaranteed to have.
+--
+-- Nullable, and left NULL on every pull request opened before this
+-- migration: there is no provider call this hub can retroactively make to
+-- recover a URL for one, and reconstructing it by string-formatting
+-- repo+number would assume a provider (GitHub's /pull/N is not GitLab's
+-- /merge_requests/N) this column does not itself record. Absent means
+-- "opened by an earlier build", not "no pull request" — pr_number already
+-- carries that distinction.
+ALTER TABLE incidents ADD COLUMN pr_url text;
+
+-- No index: read by incident id (the primary key) for exactly one row, same
+-- as every other pr_* column.

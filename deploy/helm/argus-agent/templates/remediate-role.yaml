@@ -1,0 +1,145 @@
+{{- if not (include "argus-agent.skip" .) }}
+{{- if and .Values.remediate.enabled .Values.remediate.namespaces }}
+# Namespace-scoped remediation write access — lld/04-rbac-profiles.md §8's
+# specified shape, "one Role per (enabled packs' union, selected namespace),
+# namespace-scoped by default", and now the preferred one.
+#
+# WHY THIS FILE EXISTS
+#
+# The chart previously shipped only the cluster-wide ClusterRole in
+# templates/clusterrole.yaml. §9's own privilege-escalation table names that
+# shape as "the one configuration where this table's namespace-scoping
+# arguments weaken", and the chart made it the only configuration available —
+# silently, with no value to opt out. The repo's own security review returned
+# "not yet safe to point at production" on the strength of exactly this
+# (WORKLOG §97, finding F4): once a container's image became a writable field,
+# a principal holding remediation:approve plus remediation:execute:inplace
+# reached any Deployment in any namespace, kube-system included.
+#
+# The two controls that might look like they cover this do not:
+#
+#   - The ValidatingAdmissionPolicy restricts which FIELDS may change. It says
+#     nothing about WHERE. A field-restricted write to kube-system is still a
+#     write to kube-system.
+#   - internal/remediation/risk.go raises the risk FLOOR for protected
+#     namespaces. A floor is something a human can approve straight past; it
+#     is a prompt for attention, not a boundary.
+#
+# So the boundary has to be RBAC, which is the one layer that can express it.
+#
+# WHAT THIS DELIBERATELY DOES NOT NARROW
+#
+# Only the WRITE pack is namespaced. argus-investigate's read-only ClusterRole
+# stays cluster-wide and cluster-bound, because detection genuinely is
+# fleet-wide: the sweep detector Lists Nodes and every workload kind across all
+# namespaces, and a namespaced read grant would silently stop ARGUS noticing
+# problems outside the remediation allowlist. Reading everything and writing
+# almost nothing is the intended asymmetry, not an oversight.
+#
+# One Role per namespace rather than one Role with a namespace list, because
+# RBAC has no such thing — a Role is namespaced by definition. That is also
+# what makes this auditable: `kubectl get rolebindings -A | grep argus` answers
+# "where can ARGUS write?" exactly, which the cluster-wide shape cannot.
+{{- range $ns := .Values.remediate.namespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: argus-remediate
+  namespace: {{ $ns }}
+  labels:
+    {{- include "argus-agent.labels" $ | nindent 4 }}
+rules:
+  # Identical verb/resource set to the cluster-wide ClusterRole, so enabling or
+  # disabling namespace scoping changes only WHERE, never WHAT. If these two
+  # rule sets ever diverge, the divergence is the bug.
+  - apiGroups: ["apps"]
+    resources: [deployments, statefulsets]
+    verbs: [get, patch, update]
+  # replicasets read is load-bearing, not incidental: revert_container_image
+  # resolves the previous revision's image from the target's own owned
+  # ReplicaSets and refuses to write any image it cannot find there. Dropping
+  # this read does not harden the action, it makes it fail closed and useless.
+  - apiGroups: ["apps"]
+    resources: [replicasets]
+    verbs: [get, list, watch]
+  # Service, Ingress, HorizontalPodAutoscaler, PodDisruptionBudget, CronJob —
+  # identical to the cluster-wide ClusterRole's own rows added for the same
+  # reason (BACKLOG.md "still open" #9, 2026-08-29 — see
+  # templates/clusterrole.yaml's comment for the full reasoning); this file's
+  # own header rule applies here too: if these two rule sets ever diverge, the
+  # divergence is the bug.
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [patch]
+  - apiGroups: ["networking.k8s.io"]
+    resources: [ingresses]
+    verbs: [patch]
+  - apiGroups: ["autoscaling"]
+    resources: [horizontalpodautoscalers]
+    verbs: [patch]
+  - apiGroups: ["policy"]
+    resources: [poddisruptionbudgets]
+    verbs: [get, list, watch, patch]
+  - apiGroups: ["batch"]
+    resources: [cronjobs]
+    verbs: [patch]
+  # GitOps quick actions (docs/CLUSTER_INSIGHT_SPECS.md CI-S15): patch, held
+  # to exactly two annotation keys — argocd.argoproj.io/refresh and
+  # reconcile.fluxcd.io/requestedAt — by the
+  # argus-remediate-gitops-reconcile-only admission policy. Asking a
+  # controller to act now changes no desired state.
+  - apiGroups: ["argoproj.io"]
+    resources: [applications]
+    verbs: [get, patch]
+  - apiGroups: ["kustomize.toolkit.fluxcd.io", "helm.toolkit.fluxcd.io", "source.toolkit.fluxcd.io"]
+    resources: [kustomizations, helmreleases, gitrepositories, helmrepositories, ocirepositories]
+    verbs: [get, patch]
+  # Pod, Job, PersistentVolumeClaim — BACKLOG.md F9's deleteResource action
+  # type, identical to the cluster-wide ClusterRole's own rows added for the
+  # same reason (see templates/clusterrole.yaml's comment); this file's own
+  # header rule applies here too: if these two rule sets ever diverge, the
+  # divergence is the bug.
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [delete]
+  - apiGroups: ["batch"]
+    resources: [jobs]
+    verbs: [delete]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [delete]
+  # ConfigMap — BACKLOG.md F9's createResource action type, identical to the
+  # cluster-wide ClusterRole's own row added for the same reason (see
+  # templates/clusterrole.yaml's own comment); this file's own header rule
+  # applies here too: if these two rule sets ever diverge, the divergence is
+  # the bug.
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: argus-remediate
+  namespace: {{ $ns }}
+  labels:
+    {{- include "argus-agent.labels" $ | nindent 4 }}
+subjects:
+  # The ServiceAccount lives in the agent's own namespace and is granted rights
+  # in this one — the ordinary cross-namespace RoleBinding shape. The
+  # ValidatingAdmissionPolicy's matchConditions hardcode this
+  # (namespace, name) pair, so renaming either without updating
+  # templates/validatingadmissionpolicy.yaml silently disables the field
+  # restriction while leaving the write grant in place: the worst combination
+  # available. See values.yaml's note on remediate.serviceAccount.name.
+  - kind: ServiceAccount
+    name: {{ $.Values.remediate.serviceAccount.name }}
+    namespace: {{ $.Values.namespace.name }}
+roleRef:
+  kind: Role
+  name: argus-remediate
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+{{- end }}
+{{- end }}

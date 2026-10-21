@@ -1,0 +1,37 @@
+-- BACKLOG.md F23: the whole-file grammar (2026-08-28, commit 41a0244) deleted
+-- the single-field grammar's post-merge value check along with it —
+-- incidents.pr_field_path/pr_expected_value (migration 000059) are now
+-- written NULL on every path, because a whole-file change has no single
+-- field to re-assert. VerifyMergedPullRequest therefore always took its
+-- "cannot tell" branch and ValidationSweeper fell back to the quiet
+-- grace-period alone: honest, but strictly weaker than what this codebase
+-- could assert before the rewrite.
+--
+-- The whole-file successor needs something to compare a merged, synced pull
+-- request's files against, and the single field/value pair has no equivalent
+-- shape for "one or many whole files changed". This is that: every changed
+-- file's path and whole proposed content, captured at PR-open time from the
+-- SAME gitops.ChangeVerification the pull request body and the audit record
+-- already quote (internal/api/repository_change.go's encodeProposedFiles).
+--
+-- ON INCIDENTS, not a new table, for the same reason migration 000058/000059
+-- give for pr_number/pr_field_path: a pull request can open via either
+-- approveByOpeningPullRequest (an approved OpenPR recommendation) or
+-- handleOpenRepositoryChange (the self-service route, which routinely runs
+-- with no remediation_recommendations row at all), so the column belongs on
+-- the incident, which both routes always have. A JSONB array rather than a
+-- table because there is exactly one live value per incident at a time
+-- (the most recently opened pull request's files) and nothing here is ever
+-- queried by path or joined against — the same "one row, read by incident id"
+-- shape pr_field_path/pr_expected_value already have, just carrying an array
+-- instead of two scalars.
+--
+-- Nullable, and NULL for every incident whose pull request predates this
+-- migration or opened through a path whose bookkeeping write failed —
+-- VerifyMergedPullRequest reads that the same way it already reads a NULL
+-- pr_field_path: "cannot tell", falling back to ValidationSweeper's
+-- quiet-grace-period behaviour, never manufactured into a recurrence.
+ALTER TABLE incidents ADD COLUMN pr_proposed_files jsonb;
+
+-- No index: read by incident id (the primary key) for exactly one row, same
+-- as pr_number/pr_merged_at/pr_field_path/pr_expected_value.

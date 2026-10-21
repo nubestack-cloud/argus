@@ -1,0 +1,16 @@
+# Loop campaign, wave 4 — S22b: the S22 fault again, after the agent learned to resolve a
+# ReplicaSet's own events to its Deployment (internal/agent/workload.go). Expected: ONE
+# incident whose workload is the Deployment — the ReplicaSet's FailedCreate and the
+# Deployment's sustained ReplicaFailure/Unavailable findings joining it — where S22 opened two.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s22b-missing-sa, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S22b}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: s22b-missing-sa}}
+  template:
+    metadata: {labels: {app: s22b-missing-sa}}
+    spec:
+      serviceAccountName: s22b-reporter
+      containers:
+        - {name: app, image: busybox:1.36, command: ["sh", "-c", "sleep 3600"]}

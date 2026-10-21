@@ -1,0 +1,53 @@
+/* The three faces the supplied login designs ask for.
+ *
+ * THE ONE PLACE THIS PORT DEVIATES FROM THE SOURCE FILES. Each .html loads
+ * these from fonts.googleapis.com; ARGUS deploys on-prem and sometimes
+ * air-gapped, so a hub that cannot reach a CDN would fall back to system-ui and
+ * the screens would not be the designs any more. Same faces, same family names,
+ * served from the hub — so every `font-family:Inter` / `'Space Grotesk'` /
+ * `'JetBrains Mono'` in the .module.css files is unchanged and resolves
+ * to the real face.
+ *
+ * All three are the VARIABLE fonts, so the whole weight range the designs use
+ * (Inter 400/500/600/700, Space Grotesk 500/700, JetBrains Mono 400/500) comes
+ * from one file each rather than nine static files. Subset to printable ASCII
+ * plus the punctuation the designs actually render — the em/en dashes and
+ * middot in the copy, the ✓ in the submit
+ * confirmations, the → in screen 02's provider rows, and tabular figures for
+ * the counters.
+ *
+ * Regenerate from web/public/fonts:
+ *   curl the latin @font-face src out of
+ *     fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,100..900
+ *   python3 -m fontTools.subset inter.woff2 \
+ *     --unicodes="U+0020-007E,U+00A0,U+2013,U+2014,U+2018-201A,U+201C-201E,U+2022,U+2026,U+25B2,U+25BC,U+00B7,U+2713,U+2192" \
+ *     --layout-features="kern,liga,calt,tnum" --flavor=woff2 \
+ *     --output-file=login-inter.woff2
+ *
+ * Not a CSS module: @font-face family names are global by nature, and these are
+ * referenced from three separate modules.
+ */
+
+@font-face {
+  font-family: 'Inter';
+  src: url('/fonts/login-inter.woff2') format('woff2-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Space Grotesk';
+  src: url('/fonts/login-space-grotesk.woff2') format('woff2-variations');
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('/fonts/login-jetbrains-mono.woff2') format('woff2-variations');
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}

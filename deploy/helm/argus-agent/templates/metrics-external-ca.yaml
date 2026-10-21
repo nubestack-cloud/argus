@@ -1,0 +1,14 @@
+{{- if not (include "argus-agent.skip" .) }}
+{{- if and (dig "external" "url" "" .Values.metrics) (dig "external" "caBundle" "" .Values.metrics) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argus-agent-metrics-external-ca
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+data:
+  ca.crt: |
+    {{- (dig "external" "caBundle" "" .Values.metrics) | nindent 4 }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,102 @@
+{
+  "id": "argocd-missing-namespace-pr-fix",
+  "description": "PG9 (2026-10-13 parity review): a recognised GitOps failure (gitopsinsight.FailureClassNamespaceNotFound) must reach a real fix through the ordinary pull-request route, not just a correct root cause. The Application is Argo-managed, so the route resolves to pullRequest, which permits only OpenPR and DeleteResource (internal/resolution.PermittedActionTypes) — the right fix here is a pull request adding the missing Namespace (or setting CreateNamespace=true), never a live patch.",
+  "finding": {
+    "detectorId": "k8s-sweep",
+    "severity": "high",
+    "namespace": "argocd",
+    "objectName": "billing-reconciler",
+    "reason": "GitOpsSyncFailed",
+    "message": "Argo CD cannot apply this Application's manifests (phase Failed, 3 retries, revision a1b2c3d): failed to apply: namespaces \"billing\" not found",
+    "occurrenceCount": 3
+  },
+  "toolResponses": {
+    "get_events": [
+      {
+        "match": {},
+        "data": [
+          {
+            "namespace": "argocd",
+            "involvedObjectKind": "Application",
+            "involvedObjectName": "billing-reconciler",
+            "reason": "OperationError",
+            "message": "Sync operation failed: one or more objects failed to apply",
+            "type": "Warning",
+            "count": 3,
+            "lastTimestamp": "2026-10-13T09:00:00Z"
+          }
+        ]
+      }
+    ],
+    "describe_resource": [
+      {
+        "match": {},
+        "data": {
+          "object": {
+            "apiVersion": "argoproj.io/v1alpha1",
+            "kind": "Application",
+            "metadata": { "name": "billing-reconciler", "namespace": "argocd" },
+            "spec": {
+              "source": { "repoURL": "https://github.com/acme/platform-gitops.git", "path": "apps/billing-reconciler", "targetRevision": "main" },
+              "destination": { "server": "https://kubernetes.default.svc", "namespace": "billing" },
+              "syncPolicy": { "automated": { "selfHeal": true } }
+            },
+            "status": {
+              "sync": { "status": "OutOfSync", "revision": "a1b2c3d4e5f6" },
+              "health": { "status": "Missing" },
+              "operationState": {
+                "phase": "Failed",
+                "message": "failed to apply: namespaces \"billing\" not found (retried 3 times)",
+                "retryCount": 3,
+                "syncResult": { "revision": "a1b2c3d4e5f6" }
+              }
+            }
+          },
+          "events": [],
+          "gitOpsHeadline": {
+            "headline": "The last sync failed and Argo CD stopped retrying after 3 attempts: failed to apply: namespaces \"billing\" not found (retried 3 times).",
+            "causes": ["The destination namespace does not exist. Create it, or enable CreateNamespace=true in the Application's syncOptions so Argo creates it on sync."]
+          },
+          "parsedFailure": {
+            "class": "namespaceNotFound",
+            "cause": "The destination namespace does not exist. Create it, or enable CreateNamespace=true in the Application's syncOptions so Argo creates it on sync.",
+            "missingNamespace": "billing",
+            "retryCount": 3
+          }
+        }
+      }
+    ],
+    "get_gitops_ownership": [
+      {
+        "match": {},
+        "data": {
+          "managed_by": "argocd",
+          "app_ref": { "kind": "Application", "namespace": "argocd", "name": "billing-reconciler" },
+          "repo_target": { "repo_url": "https://github.com/acme/platform-gitops.git", "path": "apps/billing-reconciler", "revision": "a1b2c3d4e5f6", "revision_pinned": true }
+        }
+      }
+    ],
+    "list_repo_files": [
+      {
+        "match": {},
+        "data": { "files": ["apps/billing-reconciler/deployment.yaml", "apps/billing-reconciler/service.yaml"] }
+      }
+    ],
+    "read_repo_file": [
+      {
+        "match": {},
+        "data": { "path": "apps/billing-reconciler/deployment.yaml", "content": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: billing-reconciler\n  namespace: billing\nspec:\n  replicas: 2\n", "totalLines": 6, "truncated": false }
+      }
+    ]
+  },
+  "expected": {
+    "type": "definite",
+    "requiredKeywords": ["namespace"],
+    "forbiddenKeywords": [],
+    "minConfidence": 0.5,
+    "minIterations": 2,
+    "maxIterations": 6,
+    "requiredRoute": "pullRequest",
+    "requiredActionType": "OpenPR"
+  }
+}

@@ -1,0 +1,27 @@
+-- PROJECT.md T1's fourth named importance factor: workload criticality.
+--
+-- pod_priority carries the resolved spec.priority INTEGER of the Pod whose
+-- Finding opened this incident — the INTEGER the API server's priority
+-- admission plugin already stamps onto a Pod from its PriorityClassName,
+-- deliberately never the class NAME itself (see internal/importance's own
+-- package doc comment, and generic_predicates.go's doc comment on why
+-- spec.priorityClassName specifically was NOT resolved generically for a
+-- different predicate — the integer needs no such resolution).
+--
+-- NULL means "unknown", never zero, and covers three genuinely different
+-- causes this column deliberately does not distinguish: the incident's
+-- opening object isn't a Pod at all (a Service, a PVC, a CRD, ...); the
+-- opening Finding came from an agent older than tunnel.Finding.PodPriority;
+-- or the opening Pod's own spec.priority was itself never resolved by the
+-- API server. A consumer must treat all three as "no criticality signal",
+-- never a fabricated low-priority zero — see internal/gateway/finding.go's
+-- INSERT for where this is written and internal/importance's
+-- WorkloadCriticality factor for where it is read back.
+--
+-- Set ONCE, at incident creation, from the opening Finding — same "never
+-- changes afterward" convention workload_key/opening_reason/
+-- related_workload_key already use (migration 000042/000070): correlation
+-- groups every Finding about the same fault onto one incident, and which
+-- Pod opened it is a fact about that incident's own history, not something
+-- a later, different Finding should retroactively change.
+ALTER TABLE incidents ADD COLUMN pod_priority integer;

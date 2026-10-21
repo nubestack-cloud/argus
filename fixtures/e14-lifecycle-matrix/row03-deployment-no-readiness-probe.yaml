@@ -1,0 +1,121 @@
+# E14 lifecycle matrix, row 3 — "Deployment with no readiness probe".
+# Campaign context and the full row inventory: README.md in this directory.
+#
+# Why this row: a posture audit of a HEALTHY object (DEPL-024/AU1 in the
+# issue catalogue; the declarative rule set that would have to carry it is
+# internal/agent/rules/default-rules.yaml).
+# Nothing is ever wrong in status at rest — every Pod reads Ready=True the
+# instant its container process starts, whether or not the app inside is
+# actually able to serve traffic yet. The fault only has a symptom DURING a
+# rollout: the new ReplicaSet's Pods are marked Ready (and so receive
+# traffic) before the app is actually up, so requests get dropped for the
+# rollout's duration and leave no trace once it settles.
+#
+# As of 2026-09-03 (checked while building this fixture — see
+# internal/agent/rules/default-rules.yaml, which has notPresent-comparator
+# rules for job-missing-active-deadline-seconds (AP1) and
+# deployment-all-replicas-single-node (AV1) but NONE for a missing
+# readinessProbe): NO rule or Go checker in this codebase detects this
+# shape today, static or live. That absence is itself the finding this row
+# is designed to surface, not a bug in the fixture.
+#
+# This fixture forces the failure window to be observable rather than
+# instantaneous: the container's readiness (such as it is — there is no
+# actual readinessProbe) is indistinguishable from Ready, but the process
+# itself sleeps for 20s after start before doing anything, and the
+# Deployment is rolled by bumping the image tag / a pod-template
+# annotation, one replica at a time (maxUnavailable=0, maxSurge=1, so the
+# window is visible via extra churn rather than an outage).
+#
+# Usage:
+#   kubectl apply -f row03-deployment-no-readiness-probe.yaml
+#   # ... wait for steady state (2/2 Ready) ...
+#   kubectl -n e14-row03 rollout restart deployment/row03-no-probe
+#   kubectl -n e14-row03 get pods -w   # new Pods read 1/1 Ready within ~2-3s,
+#                                       # long before the 20s "warm-up" sleep
+#                                       # finishes — confirmed live 2026-09-03
+#   kubectl delete -f row03-deployment-no-readiness-probe.yaml
+#
+# (An earlier attempt to trigger the rollout via `kubectl annotate deployment`
+# on the Deployment's own metadata was a no-op — only the POD TEMPLATE's
+# metadata changing forces a new ReplicaSet, which `rollout restart` does
+# correctly.)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e14-row03
+  labels:
+    e14-lifecycle-matrix: "true"
+    e14-row: "row03-no-readiness-probe"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: row03-no-probe
+  namespace: e14-row03
+  labels:
+    app: row03-no-probe
+spec:
+  replicas: 2
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: row03-no-probe
+  template:
+    metadata:
+      labels:
+        app: row03-no-probe
+    spec:
+      containers:
+        - name: slow-start
+          image: busybox:1.36
+          # No readinessProbe/livenessProbe/startupProbe at all — the
+          # container is reported Ready the instant the process starts,
+          # 20s before it would actually be able to serve anything real.
+          command:
+            - sh
+            - -c
+            - "sleep 20; echo ready-for-real; sleep 3600"
+          resources:
+            requests:
+              cpu: "25m"
+              memory: "16Mi"
+---
+# Healthy control (E14 lifecycle matrix, row 13, "healthy control —
+# posture audit / readiness probe"): an otherwise identical Deployment that
+# DOES declare a readinessProbe, proving that if a posture-audit rule for
+# this shape is ever built, it stays quiet here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: row03-with-probe-control-healthy
+  namespace: e14-row03
+  labels:
+    app: row03-with-probe-control-healthy
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: row03-with-probe-control-healthy
+  template:
+    metadata:
+      labels:
+        app: row03-with-probe-control-healthy
+    spec:
+      containers:
+        - name: has-probe
+          image: busybox:1.36
+          command: ["sh", "-c", "touch /tmp/ready; sleep 3600"]
+          readinessProbe:
+            exec:
+              command: ["test", "-f", "/tmp/ready"]
+            initialDelaySeconds: 1
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: "25m"
+              memory: "16Mi"

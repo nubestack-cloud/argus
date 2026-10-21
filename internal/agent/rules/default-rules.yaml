@@ -1,0 +1,1212 @@
+# Default declarative detection rules, shipped with the agent and embedded
+# into the binary at build time (see internal/agent/rules.go's go:embed
+# directive). Loaded automatically whenever ARGUS_DETECTION_RULES_FILE is
+# unset — see that file's package doc for the rule schema and why this is
+# agent-local config rather than something the hub pushes.
+#
+# This is still not an attempt to cover the full 1,032-entry issue-catalog —
+# see BACKLOG.md's E9 entry for the running account of what's covered and
+# what's deliberately left to Go. The first four rules below (pdb-blocks-
+# all-disruptions through certificate-expiry-imminent) are the original
+# representative set:
+#
+#   - pdb-blocks-all-disruptions: PodDisruptionBudget, the "field == literal,
+#     sustained" shape.
+#   - networkpolicy-selects-no-pods: NetworkPolicy, the "this points at
+#     nothing" shape (a label selector matching zero live pods).
+#   - resourcequota-at-hard-limit: ResourceQuota, the "field X vs field Y"
+#     shape applied per-key across two quantity maps (status.used vs
+#     status.hard).
+#   - certificate-expiry-imminent: cert-manager Certificate, the "field vs a
+#     computed time boundary" shape — status.notAfter only, per Q1's already-
+#     decided scope (no Secret access, ever).
+#
+# The rules from pdb-selector-matches-no-pods onward are a second batch
+# (BACKLOG.md E9, second pass), picked from the issue-catalog's remaining
+# dark categories (categories with no object kind any detector — hand-written
+# or rule — lists) using object kinds that already had RBAC and
+# supportedGVKs entries from either the first E9 pass or an earlier
+# hand-written detector, so this batch needed no chart change. See each
+# rule's own comment for its catalog source and shape. Two catalogue shapes
+# considered for this batch were deliberately NOT turned into rules, because
+# they need more than this format's five comparators:
+#
+#   - CronJob "never fires" / "no successful run" (issue-catalog JOB-010):
+#     what counts as "stale" depends on the CronJob's own spec.schedule
+#     (a cron expression every 5 minutes vs. once a day need wildly different
+#     staleness windows), which this format has no way to compute per-object
+#     — every condition here compares against a single fixed literal Value
+#     or another field on the SAME object, never a value derived from
+#     parsing a different field's content. It would also need to suppress
+#     itself for spec.suspend: true (an intentionally paused CronJob having
+#     "no successful run" is not a problem), and this format has no AND of
+#     two conditions. Both are exactly the kind of expressiveness rules.go's
+#     header comment reserves for Go.
+#   - ConfigMap propagation/drift shapes (CM-101 and neighbors, issue-catalog
+#     category U): every one of them is really a comparison between a
+#     ConfigMap and the Pods/Deployments that mounted it (has the pod
+#     restarted since the ConfigMap last changed?) — a cross-object join this
+#     format cannot express, since a condition only ever reads fields off the
+#     ONE object a rule's gvk lists.
+#
+# The rules from namespace-stuck-terminating onward are a THIRD batch
+# (BACKLOG.md E9, third pass, 2026-08-26), picked the same way as the second:
+# re-deriving which of the issue-catalog's 45 categories still have no object
+# kind any detector (hand-written or rule) lists, at all, at the current state
+# of this file — not trusting the original "30 of 45" count, which the first
+# two passes have already reduced. This pass closes two more previously-dark
+# categories (M, "Namespace & object lifecycle"; AQ, "Backup, disaster
+# recovery & data protection") and adds seven more rules of depth on kinds
+# already covered — the same "add signal a hand-written checker doesn't
+# already produce" latitude the second pass used for HPA (K) and PV/PVC (W).
+# Two of this batch's five kinds needed a genuinely new RBAC/supportedGVKs
+# addition (Namespace's list/watch; velero.io/v1 Backup, wholesale) — see
+# deploy/helm/argus-agent/templates/clusterrole.yaml and
+# lld/04-rbac-profiles.md §4 for both, mirrored there first per that
+# section's own header instruction. The other three (Argo Application, Flux
+# GitRepository, and Deployment/DaemonSet/StatefulSet) needed nothing new:
+# argoproj.io and source.toolkit.fluxcd.io were already granted in full for
+# GitOps-ownership resolution, and apps/v1 has been granted since this
+# ClusterRole's very first version.
+#
+#   - namespace-stuck-terminating: Namespace, the deletionTimestamp-vs-
+#     creationTimestamp "stuck Terminating" shape the second pass already
+#     used for PersistentVolume/PersistentVolumeClaim/Pod (issue-catalog
+#     NS-001, category M).
+#   - velero-backup-partially-failed: Velero's Backup CRD, status.phase == a
+#     literal — the same shape as persistentvolume-released-stuck (issue-
+#     catalog DR-003, category AQ). The first rule in this file for a
+#     backup/DR tool rather than a workload, storage or GitOps kind.
+#   - argo-application-health-degraded: Argo CD's Application CRD,
+#     status.health.status == "Degraded" — a different field from the one
+#     syncfailure.go's hand-written checkArgoSyncFailed already reads
+#     (status.operationState/status.sync), so this is new signal, not a
+#     duplicate: a sync can succeed while the resulting resources are
+#     unhealthy, which OutOfSync/SyncFailed alone would miss (issue-catalog
+#     ARGO-010, category AE — already non-dark via Application, but this
+#     field was still unread by anything).
+#   - flux-gitrepository-reconciliation-stalled: Flux's GitRepository CRD,
+#     the same observedGeneration-vs-generation shape the second pass used
+#     for Kustomization/HelmRelease — GitRepository was already granted and
+#     already in supportedGVKs (for GitOps-ownership resolution) but no rule
+#     had ever read it (category AF — already non-dark, same reasoning as
+#     Argo above).
+#   - deployment-paused / deployment-observedgeneration-behind: Deployment,
+#     two fields neither checkDeploymentReplicas nor checkReplicaFailure
+#     reads (spec.paused; status.observedGeneration vs metadata.generation)
+#     — issue-catalog DEPL-005 and DEPL-007, category G (already non-dark).
+#   - daemonset-rollout-stalled / statefulset-rollout-stalled: DaemonSet and
+#     StatefulSet, comparing each controller's own "updated" counter against
+#     its desired count — a rollout-progress signal distinct from
+#     checkDaemonSetReplicas/checkStatefulSetReplicas, which both compare
+#     READY against desired and so miss "every pod is Ready, but on the OLD
+#     version" (issue-catalog DS-004 and STS-001, categories I and H, both
+#     already non-dark).
+#   - persistentvolume-failed: PersistentVolume, status.phase == "Failed" —
+#     a different literal than persistentvolume-released-stuck's "Released"
+#     and a different fault (the provisioner or backend actually errored,
+#     not "reclaimPolicy: Retain kept a stale claimRef") (issue-catalog
+#     PVC-021, category W, already non-dark).
+#
+# The rules from deployment-rollout-stalled onward are a FOURTH batch
+# (BACKLOG.md E9, fourth pass, 2026-08-26) — this pass was explicitly asked to
+# read the full 1,032-entry issue-catalog category by category rather than
+# opportunistically, and to keep going until the rule-shaped portion of it is
+# genuinely exhausted, not just "another representative batch". See
+# BACKLOG.md's E9 entry for the full category-by-category account (what was
+# added, what was found already covered, and what was deliberately rejected
+# and why — including several categories rejected for a reason none of the
+# first three passes had already used, not just re-stated old ones). In
+# summary, this batch is ten new rules, all depth on already-non-dark
+# categories (no NEW category closed this pass — the exhaustive read found
+# every remaining structurally-open category is not rule-shaped at all, for
+# reasons detailed in BACKLOG.md):
+#
+#   - deployment-rollout-stalled: apps/v1 Deployment, status.updatedReplicas
+#     vs spec.replicas (lt) — the same "every pod Ready, still on the old
+#     version" gap the third pass's daemonset-rollout-stalled/
+#     statefulset-rollout-stalled rules closed for their kinds, but Deployment
+#     itself never got the equivalent rule despite having the identical field
+#     pair (issue-catalog DEPL-002, category G).
+#   - deployment-scaled-to-zero: apps/v1 Deployment, spec.replicas == 0 (eq)
+#     — checkDeploymentReplicas (sweep_detector.go) explicitly skips desired
+#     == 0 ("nothing to report — 0/0 is trivially satisfied"), so a Deployment
+#     someone scaled to zero and forgot is invisible to every existing check.
+#     Low severity: this is frequently intentional (issue-catalog DEPL-011).
+#   - deployment-revision-history-limit-zero: apps/v1 Deployment,
+#     spec.revisionHistoryLimit == 0 (eq) — a plain, permanent misconfiguration
+#     (the field defaults to 10 when unset, so this only matches an explicit
+#     0) that silently removes the ability to `kubectl rollout undo`
+#     (issue-catalog DEPL-015). Low severity: a standing constraint, not an
+#     active fault.
+#   - pod-evicted-not-cleaned-up: v1 Pod, status.reason == "Evicted" (eq) —
+#     issue-catalog TERM-013, a genuinely different symptom from
+#     pod-stuck-terminating (second pass): an evicted pod's object is
+#     terminal and static (kubelet does not delete it), so it sits accumulating
+#     rather than failing to finish deletion. Low severity: hygiene, not an
+#     active outage.
+#   - node-cordoned-sustained: v1 Node, spec.unschedulable == true (eq),
+#     sustained — issue-catalog NODE-010, "left cordoned after maintenance":
+#     the existing checkNodeNotReady/checkNodePressureConditions
+#     (sweep_detector.go) both read status.conditions, never spec.unschedulable,
+#     so a node correctly drained for maintenance and never uncordoned again
+#     is invisible to both. The sustained gate is what turns "mid-maintenance"
+#     into "forgotten".
+#   - argo-application-out-of-sync: argoproj.io/v1alpha1 Application,
+#     status.sync.status == "OutOfSync" (eq), sustained — a different signal
+#     from both syncfailure.go's checkArgoSyncFailed (which requires an actual
+#     failed/retrying operation) and argo-application-health-degraded (second
+#     pass, reads status.health.status): this fires on drift with no failing
+#     sync at all — Git and cluster disagree and nothing is even trying to
+#     reconcile them (issue-catalog ARGO-001, category AE, already non-dark).
+#   - flux-kustomization-suspended / flux-helmrelease-suspended /
+#     flux-gitrepository-suspended: each object's own spec.suspend == true
+#     (eq), sustained — issue-catalog FLUX-011, the same shape as
+#     deployment-paused (third pass): an explicit spec field that SUPPRESSES
+#     the existing observedGeneration-lag rules entirely (a suspended object
+#     correctly stops advancing observedGeneration, so those rules would never
+#     fire on it), meaning this is the only way any of these three objects'
+#     "nothing is happening and nobody meant that" state becomes visible at
+#     all (category AF, already non-dark).
+#   - velero-backup-failed: velero.io/v1 Backup, status.phase == "Failed" (eq)
+#     — a different, worse literal than velero-backup-partially-failed's
+#     "PartiallyFailed" (third pass): zero items saved, not just some
+#     (issue-catalog DR-011, category AQ, already non-dark).
+#   - velero-restore-partially-failed / velero-restore-failed: velero.io/v1
+#     Restore (a wholly new GVK/RBAC entry this pass — see
+#     deploy/helm/argus-agent/templates/clusterrole.yaml and
+#     lld/04-rbac-profiles.md §4, mirrored there first), status.phase ==
+#     "PartiallyFailed"/"Failed" — the same two-literal shape as Backup,
+#     applied to Velero's other primary object: a Backup succeeding says
+#     nothing about whether restoring from it actually works (issue-catalog
+#     DR-006/DR-007-adjacent, category AQ).
+#
+# What this pass looked at and did NOT turn into a rule, with the specific
+# reason — several of these are a genuinely new CLASS of rejection reason,
+# not a restatement of a prior pass's, and are recorded in full in
+# BACKLOG.md's E9 entry (categories U, V, X, Y, Z, AA, AB, AD, AG, AH, AI, AJ,
+# AN, AS structurally dark; AL, AO, AP not attempted due to unverified CRD
+# field shapes; AR's security-posture signals format-expressible but
+# rejected as inappropriate default fault-detection rules).
+#
+# Every rule's gvk must already be a key in internal/agent/tools.go's
+# supportedGVKs map (rules.go's LoadRules validates this at load time) so
+# that any incident this rule raises can actually be investigated afterward
+# via describe_resource/list_resources — the exact gap BACKLOG.md's E9 entry
+# and STATUS.md's "Detection and evidence" note both call out.
+#
+# statefulset-partition-blocks-rollout, at the end of this file, is a single
+# addition from BACKLOG.md's item #6 (2026-08-29, AR1/STS-011) rather than a
+# fifth numbered E9 pass — see statefulset-rollout-stalled's own comment
+# above for why this needed a new rule id rather than a change to that one's
+# condition.
+#
+# The final two rules (job-missing-active-deadline-seconds,
+# deployment-all-replicas-single-node) are BACKLOG.md E10, not E9 — the first
+# use of the two comparators E10 added to rules.go itself
+# (comparatorNotPresent, comparatorAllPodsSameValue), not more depth using
+# the original five. See rules.go's package doc for what each comparator is
+# and why it needed a new mode rather than fitting the existing ones; see
+# each rule's own comment below for its issue-catalog source and its live
+# verification.
+rules:
+  - id: pdb-blocks-all-disruptions
+    gvk: policy/v1/PodDisruptionBudget
+    reason: PodDisruptionBudgetBlocksAllDisruptions
+    class: risk
+    # "medium", not "high": this is a standing constraint that blocks VOLUNTARY
+    # disruption (node drains, cluster-autoscaler scale-down, a rolling
+    # maintenance operation) — it says nothing about whether the workload
+    # itself is currently healthy, which is what this file reserves "high" for
+    # elsewhere (e.g. checkDeploymentReplicas). It becomes urgent only in
+    # combination with something else needing to drain a node, which this
+    # rule cannot see.
+    severity: medium
+    message: >-
+      PodDisruptionBudget {{.Namespace}}/{{.Name}} allows zero voluntary
+      disruptions (status.disruptionsAllowed=0) — node drains, cluster-autoscaler
+      scale-down, and rolling maintenance targeting these pods will all be
+      blocked until this changes
+    condition:
+      field: status.disruptionsAllowed
+      comparator: eq
+      value: "0"
+
+  - id: networkpolicy-selects-no-pods
+    gvk: networking.k8s.io/v1/NetworkPolicy
+    reason: NetworkPolicySelectsNoPods
+    class: risk
+    severity: medium
+    message: >-
+      NetworkPolicy {{.Namespace}}/{{.Name}}'s spec.podSelector currently matches
+      zero pods in its own namespace — likely a label selector typo, a rename,
+      or a policy applied before its target workload exists; while unmatched it
+      provides no network isolation for anything
+    condition:
+      selectorField: spec.podSelector
+      comparator: selectorMatchesNoPods
+
+  - id: resourcequota-at-hard-limit
+    gvk: v1/ResourceQuota
+    reason: ResourceQuotaAtHardLimit
+    class: risk
+    severity: medium
+    message: >-
+      ResourceQuota {{.Namespace}}/{{.Name}} has reached its hard limit for
+      {{.MatchedKey}} (used {{.Value}}, hard {{.CompareValue}}) — new objects or
+      requests needing that resource in this namespace will be rejected by
+      admission until usage drops or the quota is raised
+    condition:
+      field: status.used
+      compareField: status.hard
+      comparator: gte
+      perMapKey: true
+
+  - id: certificate-expiry-imminent
+    gvk: cert-manager.io/v1/Certificate
+    reason: CertificateExpiryImminent
+    class: fault
+    # "high", not "critical": this file reserves "critical" for
+    # cluster-infrastructure blast radius (checkNodeNotReady). An imminent
+    # certificate expiry is serious and typically means cert-manager's own
+    # automatic renewal has already failed (renewal normally completes long
+    # before this window), but it is scoped to what that one Certificate
+    # secures, not the whole cluster.
+    severity: high
+    message: >-
+      cert-manager Certificate {{.Namespace}}/{{.Name}}'s status.notAfter
+      ({{.Value}}) is within the expiry warning window — automatic renewal
+      should already have completed well before now if cert-manager is
+      healthy, so this needs investigating before the certificate actually
+      expires
+    condition:
+      # Read-only against the Certificate CR's own status field — Q1 already
+      # decided this needs no Secret access, and this rule enforces that by
+      # construction: the field path never reaches into anything but this
+      # object's own status.
+      field: status.notAfter
+      comparator: expiresWithin
+      value: 168h
+
+  # --- Second batch (BACKLOG.md E9, second pass) ---
+
+  - id: pdb-selector-matches-no-pods
+    gvk: policy/v1/PodDisruptionBudget
+    reason: PodDisruptionBudgetSelectorMatchesNoPods
+    class: risk
+    # issue-catalog PDB-002: "PDB selector matches nothing (false safety)" —
+    # signals currentHealthy: 0, expectedPods: 0. A different shape from
+    # pdb-blocks-all-disruptions above (that one fires on a HEALTHY,
+    # correctly-targeted PDB that happens to permit zero disruptions; this
+    # one fires on a PDB whose selector is a label typo or a workload
+    # rename, so it protects nothing at all while looking configured) — the
+    # same selectorMatchesNoPods shape networkpolicy-selects-no-pods already
+    # uses, just against PDB's own spec.selector instead of NetworkPolicy's
+    # spec.podSelector. "Dangerous" per the catalogue's own description: an
+    # operator who sees this PDB in the manifest reasonably assumes it is
+    # protecting something.
+    severity: medium
+    message: >-
+      PodDisruptionBudget {{.Namespace}}/{{.Name}}'s spec.selector currently
+      matches zero pods in its own namespace — likely a label typo or a
+      workload rename; it looks like it protects something during a node
+      drain or maintenance operation but currently protects nothing
+    condition:
+      selectorField: spec.selector
+      comparator: selectorMatchesNoPods
+
+  - id: persistentvolume-released-stuck
+    gvk: v1/PersistentVolume
+    reason: PersistentVolumeReleasedStuck
+    class: risk
+    # issue-catalog PVC-020: "PV stuck Released, cannot be reused" —
+    # reclaimPolicy: Retain keeps the PV's claimRef set after its PVC is
+    # deleted, so the PV sits in phase Released rather than becoming
+    # Available again, and nothing can bind it until an operator manually
+    # clears claimRef. The "field == literal, sustained" shape, same as
+    # pdb-blocks-all-disruptions.
+    severity: medium
+    message: >-
+      PersistentVolume {{.Name}} has been in phase Released for a sustained
+      period — its reclaimPolicy is most likely Retain, which keeps the old
+      claimRef set after the PVC that used it was deleted, so this volume
+      cannot be bound by anything until an operator clears claimRef or
+      deletes it
+    condition:
+      field: status.phase
+      comparator: eq
+      value: Released
+
+  - id: persistentvolume-stuck-terminating
+    gvk: v1/PersistentVolume
+    reason: PersistentVolumeStuckTerminating
+    class: fault
+    # issue-catalog PVC-026: "PV stuck Terminating" — deletionTimestamp set,
+    # blocked by the external-provisioner.volume.kubernetes.io finalizer,
+    # typically because the CSI controller is down or backend deletion is
+    # failing. Detecting "deletionTimestamp is set" with only eq/ne against
+    # a literal is awkward (an RFC3339 string has no meaningful literal to
+    # compare against, and this format's non-numeric comparators are eq/ne
+    # only), so this compares metadata.deletionTimestamp against the same
+    # object's own metadata.creationTimestamp instead: deletionTimestamp is
+    # either absent (not found — never a match, per evaluateCondition) or a
+    # real timestamp that will practically never equal creationTimestamp,
+    # so "ne" between the two fires exactly when a deletion has been
+    # requested — with no arbitrary sentinel value invented for the
+    # comparison.
+    severity: medium
+    message: >-
+      PersistentVolume {{.Name}} has had a deletionTimestamp set for a
+      sustained period without finishing deletion — likely blocked on the
+      external-provisioner finalizer because the CSI controller is down or
+      the backend is refusing the delete
+    condition:
+      field: metadata.deletionTimestamp
+      compareField: metadata.creationTimestamp
+      comparator: ne
+
+  - id: persistentvolumeclaim-stuck-terminating
+    gvk: v1/PersistentVolumeClaim
+    reason: PersistentVolumeClaimStuckTerminating
+    class: fault
+    # issue-catalog PVC-025: "PVC stuck Terminating" — deletionTimestamp set,
+    # blocked by the kubernetes.io/pvc-protection finalizer because a pod
+    # (possibly a completed/failed one nobody noticed) still references it.
+    # Same deletionTimestamp-vs-creationTimestamp shape as
+    # persistentvolume-stuck-terminating above, applied to the PVC kind
+    # checkPVCPending already has RBAC/supportedGVKs coverage for — this is
+    # a different lifecycle state (Terminating) than checkPVCPending's
+    # (Pending), not a duplicate of it.
+    severity: medium
+    message: >-
+      PersistentVolumeClaim {{.Namespace}}/{{.Name}} has had a
+      deletionTimestamp set for a sustained period without finishing
+      deletion — likely blocked on the pvc-protection finalizer because a
+      pod (possibly a completed or failed one) still references it
+    condition:
+      field: metadata.deletionTimestamp
+      compareField: metadata.creationTimestamp
+      comparator: ne
+
+  - id: pod-stuck-terminating
+    gvk: v1/Pod
+    reason: PodStuckTerminating
+    class: fault
+    # issue-catalog TERM-001/002/003/004 (category F, "Termination, eviction
+    # & cleanup" — no detector, hand-written or rule, looked at any object
+    # kind in this category before this rule): "Pod stuck Terminating", from
+    # several different root causes this rule cannot and does not try to
+    # distinguish (an orphaned finalizer, a hung volume unmount, a stuck
+    # preStop hook, or an unreachable node) — same symptom-level framing as
+    # networkpolicy-selects-no-pods's "this points at nothing" (report the
+    # symptom; let the investigation loop find the cause). Same
+    # deletionTimestamp-vs-creationTimestamp shape as the two PV/PVC rules
+    # above.
+    severity: medium
+    message: >-
+      Pod {{.Namespace}}/{{.Name}} has had a deletionTimestamp set for a
+      sustained period without finishing termination — could be an orphaned
+      finalizer, a hung volume unmount, a stuck preStop hook, or the node it
+      is on being unreachable
+    condition:
+      field: metadata.deletionTimestamp
+      compareField: metadata.creationTimestamp
+      comparator: ne
+
+  - id: hpa-pegged-at-max-replicas
+    gvk: autoscaling/v2/HorizontalPodAutoscaler
+    reason: HPAPeggedAtMaxReplicas
+    class: risk
+    # issue-catalog HPA-005: "At maxReplicas, still saturated" — the
+    # catalogue's own signal is the ScalingLimited=True/TooManyReplicas
+    # status condition, which lives in status.conditions (a list this
+    # format's dot-path fields cannot index into), so this rule uses the
+    # nearest fixed-field proxy instead: currentReplicas at or above
+    # maxReplicas, sustained. A plain field-vs-field scalar comparison (no
+    # perMapKey — both sides are ordinary ints, not quantity maps), same
+    # mechanism resourcequota-at-hard-limit uses per-key, applied here to a
+    # single pair of scalar fields.
+    severity: medium
+    message: >-
+      HorizontalPodAutoscaler {{.Namespace}}/{{.Name}} has status.currentReplicas
+      ({{.Value}}) at or above spec.maxReplicas ({{.CompareValue}}) for a
+      sustained period — this workload is at its configured scaling ceiling
+      while still under enough load to stay there, which means the ceiling
+      itself, not just current capacity, needs raising
+    condition:
+      field: status.currentReplicas
+      compareField: spec.maxReplicas
+      comparator: gte
+
+  - id: flux-kustomization-reconciliation-stalled
+    gvk: kustomize.toolkit.fluxcd.io/v1/Kustomization
+    reason: FluxKustomizationReconciliationStalled
+    class: fault
+    # issue-catalog category AF ("Flux") — no detector, hand-written or
+    # rule, looked at any Flux object kind before this rule, even though
+    # tools.go's supportedGVKs and this agent's ClusterRole already grant
+    # get/list/watch on every fluxcd.io group (added for
+    # REMEDIATION_ROADMAP.md milestone 2.0's GitOps-ownership resolution),
+    # so this needed no chart change. The generation/observedGeneration
+    # pair is the standard GitOps Toolkit convention for "the controller has
+    # not yet reconciled the latest spec change" — every Flux v2 CRD's
+    # status carries observedGeneration, set to metadata.generation only
+    # once that generation's reconcile attempt has completed. A plain
+    # scalar field-vs-field comparison, same mechanism as
+    # hpa-pegged-at-max-replicas.
+    severity: medium
+    message: >-
+      Flux Kustomization {{.Namespace}}/{{.Name}}'s status.observedGeneration
+      ({{.Value}}) is behind metadata.generation ({{.CompareValue}}) for a
+      sustained period — the kustomize-controller has not reconciled the
+      latest change to this object, which usually means the controller is
+      down, stuck, or failing on this object specifically
+    condition:
+      field: status.observedGeneration
+      compareField: metadata.generation
+      comparator: lt
+
+  - id: flux-helmrelease-reconciliation-stalled
+    gvk: helm.toolkit.fluxcd.io/v2/HelmRelease
+    reason: FluxHelmReleaseReconciliationStalled
+    class: fault
+    # Same category AF, same generation/observedGeneration shape as
+    # flux-kustomization-reconciliation-stalled above, for Flux's other
+    # primary "does this actually get applied" resource kind.
+    severity: medium
+    message: >-
+      Flux HelmRelease {{.Namespace}}/{{.Name}}'s status.observedGeneration
+      ({{.Value}}) is behind metadata.generation ({{.CompareValue}}) for a
+      sustained period — the helm-controller has not reconciled the latest
+      change to this object, which usually means the controller is down,
+      stuck, or failing on this object specifically
+    condition:
+      field: status.observedGeneration
+      compareField: metadata.generation
+      comparator: lt
+
+  # --- Third batch (BACKLOG.md E9, third pass) ---
+
+  - id: namespace-stuck-terminating
+    gvk: v1/Namespace
+    reason: NamespaceStuckTerminating
+    class: fault
+    # issue-catalog NS-001 (category M, "Namespace & object lifecycle" — no
+    # detector, hand-written or rule, looked at any object kind in this
+    # category before this rule): "Namespace stuck Terminating" — usually a
+    # remaining CR a controller's finalizer refuses to let go of
+    # (NamespaceContentRemaining, FIN-003's namespace-deletion case), or the
+    # namespace-controller itself wedged. Same deletionTimestamp-vs-
+    # creationTimestamp shape as the second pass's PersistentVolume/
+    # PersistentVolumeClaim/Pod "stuck Terminating" rules. Needed a genuinely
+    # new RBAC grant (list/watch on namespaces — see
+    # deploy/helm/argus-agent/templates/clusterrole.yaml's own comment): there
+    # is no single named object to Get here, unlike the one kube-system
+    # lookup that grant previously existed for, so finding THE stuck one
+    # needs enumerating all of them.
+    severity: medium
+    message: >-
+      Namespace {{.Name}} has had a deletionTimestamp set for a sustained
+      period without finishing deletion — likely a CR a controller's
+      finalizer still won't release (NamespaceContentRemaining), or the
+      namespace controller itself is stuck
+    condition:
+      field: metadata.deletionTimestamp
+      compareField: metadata.creationTimestamp
+      comparator: ne
+
+  - id: velero-backup-partially-failed
+    gvk: velero.io/v1/Backup
+    reason: VeleroBackupPartiallyFailed
+    class: fault
+    # issue-catalog DR-003 (category AQ, "Backup, disaster recovery & data
+    # protection" — no detector, hand-written or rule, looked at any object
+    # kind in this category before this rule): "Backup partially failed" —
+    # some but not all of the backup's items were saved, so `velero backup
+    # describe` shows errors but the backup still "exists" and can look fine
+    # in a dashboard that only checks for a Backup object's presence. The
+    # "field == literal, sustained" shape, same as persistentvolume-
+    # released-stuck. Needed a wholly new RBAC/supportedGVKs addition
+    # (velero.io/v1 Backup) — the first rule in this file for a backup/DR
+    # tool rather than a workload, storage or GitOps kind. Velero not being
+    # installed is tolerated the same way cert-manager/Argo/Flux not being
+    # installed already are (evaluateRule's meta.IsNoMatchError handling).
+    severity: high
+    message: >-
+      Velero Backup {{.Namespace}}/{{.Name}} finished with status.phase
+      PartiallyFailed — some items in this backup were not saved, so a
+      restore from it will be incomplete; check `velero backup describe
+      {{.Name}} --details` for which items failed
+    condition:
+      field: status.phase
+      comparator: eq
+      value: PartiallyFailed
+
+  - id: argo-application-health-degraded
+    gvk: argoproj.io/v1alpha1/Application
+    reason: ArgoApplicationHealthDegraded
+    class: fault
+    # issue-catalog ARGO-010 (category AE, "Argo CD" — already non-dark via
+    # syncfailure.go's hand-written checkArgoSyncFailed, which reads
+    # status.operationState/status.sync for a sync that could not be
+    # applied): "Health status Degraded" reads a DIFFERENT field
+    # (status.health.status) and catches a different fault — a sync that
+    # succeeded but left the resulting resources unhealthy (a Deployment
+    # that's Progressing=False, a PVC that's Pending), which
+    # checkArgoSyncFailed's OutOfSync/operationState checks cannot see at
+    # all. A plain field-vs-literal eq, same shape as
+    # pdb-blocks-all-disruptions.
+    severity: high
+    message: >-
+      Argo CD Application {{.Namespace}}/{{.Name}} has status.health.status
+      Degraded for a sustained period — the sync itself may have succeeded,
+      but the resources it applied are not healthy; see the Application's
+      status.resources for which one
+    condition:
+      field: status.health.status
+      comparator: eq
+      value: Degraded
+
+  - id: flux-gitrepository-reconciliation-stalled
+    gvk: source.toolkit.fluxcd.io/v1/GitRepository
+    reason: FluxGitRepositoryReconciliationStalled
+    class: fault
+    # category AF, "Flux" — already non-dark via the second pass's
+    # Kustomization/HelmRelease rules, but GitRepository (the source-of-
+    # truth object those two ultimately depend on) had supportedGVKs/RBAC
+    # from REMEDIATION_ROADMAP.md milestone 2.0's GitOps-ownership
+    # resolution and was still read by no detector or rule before this one.
+    # Same observedGeneration-vs-generation GitOps Toolkit convention as
+    # flux-kustomization-reconciliation-stalled — a Kustomization can be
+    # perfectly reconciled against a GitRepository that itself stopped
+    # fetching new commits, which the Kustomization-level rule alone cannot
+    # see.
+    severity: medium
+    message: >-
+      Flux GitRepository {{.Namespace}}/{{.Name}}'s status.observedGeneration
+      ({{.Value}}) is behind metadata.generation ({{.CompareValue}}) for a
+      sustained period — the source-controller has not reconciled the latest
+      change to this object, which usually means it is down, stuck, or
+      failing to fetch this repository specifically
+    condition:
+      field: status.observedGeneration
+      compareField: metadata.generation
+      comparator: lt
+
+  - id: deployment-paused
+    gvk: apps/v1/Deployment
+    reason: DeploymentPaused
+    class: risk
+    # issue-catalog DEPL-005 (category G, "Deployment & ReplicaSet" —
+    # already non-dark via checkDeploymentReplicas/checkReplicaFailure, but
+    # neither reads spec.paused): "Deployment paused and forgotten" —
+    # spec.paused: true stops the rollout controller from reconciling this
+    # Deployment at all, so an in-flight rollout stays half-done and a later
+    # manifest change silently never applies, with no Progressing/Available
+    # condition to say why. A plain boolean field-vs-literal eq.
+    severity: medium
+    message: >-
+      Deployment {{.Namespace}}/{{.Name}} has spec.paused=true and has held
+      that state for a sustained period — the rollout controller is not
+      reconciling this Deployment at all, so neither an in-flight rollout nor
+      any later manifest change will take effect until it is unpaused
+    condition:
+      field: spec.paused
+      comparator: eq
+      value: "true"
+
+  - id: deployment-observedgeneration-behind
+    gvk: apps/v1/Deployment
+    reason: DeploymentObservedGenerationBehind
+    class: fault
+    # issue-catalog DEPL-007 (same category G as deployment-paused above):
+    # "observedGeneration behind generation" — the deployment-controller has
+    # not caught up to the latest spec change at all, distinct from both
+    # checkDeploymentReplicas (which needs the controller to have already
+    # acted and set Available=False) and deployment-paused (an explicit,
+    # visible spec field) — this is the controller itself not running or not
+    # reaching this object, which produces no condition of its own. Same
+    # generation/observedGeneration shape as the Flux rules above.
+    severity: medium
+    message: >-
+      Deployment {{.Namespace}}/{{.Name}}'s status.observedGeneration
+      ({{.Value}}) is behind metadata.generation ({{.CompareValue}}) for a
+      sustained period — the deployment-controller has not reconciled the
+      latest change to this object at all, which usually means the
+      controller manager is down, stuck, or failing on this object
+      specifically
+    condition:
+      field: status.observedGeneration
+      compareField: metadata.generation
+      comparator: lt
+
+  - id: daemonset-rollout-stalled
+    gvk: apps/v1/DaemonSet
+    reason: DaemonSetRolloutStalled
+    class: fault
+    # issue-catalog DS-004 (category I, "DaemonSet" — already non-dark via
+    # checkDaemonSetReplicas, which compares status.numberReady against
+    # status.desiredNumberScheduled and so reports READINESS, not rollout
+    # PROGRESS): "Rolling update stuck | updatedNumberScheduled frozen" — a
+    # DaemonSet can have every pod Ready while running the OLD version on
+    # some or all nodes, which checkDaemonSetReplicas cannot see at all. A
+    # plain scalar field-vs-field lt, same mechanism as
+    # hpa-pegged-at-max-replicas.
+    #
+    # BUGS.md 129 (fixed 2026-09-03): apps/v1 DaemonSetStatus.
+    # UpdatedNumberScheduled is `json:"updatedNumberScheduled,omitempty"` —
+    # a plain int32, confirmed against k8s.io/api/apps/v1 itself — so the
+    # API server's own JSON serialization omits this field entirely the
+    # instant its real value is 0, making the single most literal "rollout
+    # never started" case (every node still on the OLD revision,
+    # updatedNumberScheduled genuinely 0) indistinguishable from the field
+    # never existing on this object at all. Without absentFieldMeansZero,
+    # evaluateCondition's own "field not found → never a match" tolerance
+    # (correct for every OTHER rule — see RuleCondition's own doc comment)
+    # silently ate this comparison before lt ever ran. Live-confirmed
+    # broken on real rke2 (CAPABILITIES.md §6cm, the argus-r70-ds010
+    # fixture) before this flag was added, and confirmed fixed with it —
+    # see that same section for the after evidence.
+    severity: medium
+    message: >-
+      DaemonSet {{.Namespace}}/{{.Name}} has status.updatedNumberScheduled
+      ({{.Value}}) below status.desiredNumberScheduled ({{.CompareValue}})
+      for a sustained period — some nodes are still running the previous
+      version of this DaemonSet's pods, even if they are all Ready
+    condition:
+      field: status.updatedNumberScheduled
+      compareField: status.desiredNumberScheduled
+      comparator: lt
+      absentFieldMeansZero: true
+
+  - id: statefulset-rollout-stalled
+    gvk: apps/v1/StatefulSet
+    reason: StatefulSetRolloutStalled
+    class: fault
+    # issue-catalog STS-001 (category H, "StatefulSet" — already non-dark
+    # via checkStatefulSetReplicas, which compares status.readyReplicas
+    # against spec.replicas and so, like DS-004 above, reports READINESS not
+    # rollout PROGRESS): "Ordered rollout blocked by an unhealthy ordinal |
+    # updatedReplicas frozen" — the same "all Ready, still on the old
+    # version" gap checkStatefulSetReplicas cannot see, for the ordered
+    # rolling-update controller instead of the DaemonSet one. Same
+    # field-vs-field lt shape as daemonset-rollout-stalled.
+    #
+    # BACKLOG.md AR1 (issue-catalog STS-011, fixed 2026-08-29): this
+    # condition is correct and was NOT the gap — it is the message that was
+    # actively wrong, not merely incomplete. The message used to assert
+    # "typically because one ordinal is not becoming Ready", which is exactly
+    # backwards for STS-011's real cause: a `spec.updateStrategy.rollingUpdate.
+    # partition` left nonzero after a canary, where EVERY ordinal is healthy
+    # and the controller is correctly refusing to update anything below the
+    # partition boundary. That phrasing sent a reader hunting a broken pod
+    # that does not exist. This format has no AND of two conditions (see this
+    # file's own header comment), so this condition cannot itself check
+    # partition and still fire on the general "stuck" case a bad ordinal
+    # produces — the fix is a neutral message naming BOTH real causes, plus a
+    # dedicated new rule below (statefulset-partition-blocks-rollout) that
+    # fires and reports specifically when partition is the (provable) cause,
+    # so a reader who sees both findings on the same incident (object
+    # correlation, see BUGS.md/A1) is not steered toward guessing.
+    #
+    # BUGS.md 129 (fixed 2026-09-03): apps/v1 StatefulSetStatus.
+    # UpdatedReplicas is `json:"updatedReplicas,omitempty"` — a plain
+    # int32, confirmed against k8s.io/api/apps/v1 itself, the identical
+    # shape to DaemonSetStatus.UpdatedNumberScheduled below (this file's
+    # daemonset-rollout-stalled), which was live-confirmed broken on real
+    # rke2 for exactly this reason (CAPABILITIES.md §6cm). This rule was
+    # flagged as "structurally exposed, not independently reproduced" when
+    # 129 was first found; confirming the field type here is enough to
+    # apply the same fix rather than leave it as a live gap while the
+    # DaemonSet case alone got fixed.
+    severity: medium
+    message: >-
+      StatefulSet {{.Namespace}}/{{.Name}} has status.updatedReplicas
+      ({{.Value}}) below spec.replicas ({{.CompareValue}}) for a sustained
+      period — the ordered rolling update is not progressing. This can mean
+      an ordinal is failing to become Ready and the update strategy refuses
+      to move past it, OR that spec.updateStrategy.rollingUpdate.partition
+      has been left nonzero from a canary and was never lowered back to 0
+      (every ordinal may be perfectly healthy in that case — check
+      StatefulSetPartitionBlocksRollout on this same object before assuming a
+      broken pod)
+    condition:
+      field: status.updatedReplicas
+      compareField: spec.replicas
+      comparator: lt
+      absentFieldMeansZero: true
+
+  - id: persistentvolume-failed
+    gvk: v1/PersistentVolume
+    reason: PersistentVolumeFailed
+    class: fault
+    # issue-catalog PVC-021 (category W, "PVC, PV, StorageClass" — already
+    # non-dark via persistentvolume-released-stuck/persistentvolume-stuck-
+    # terminating): "PV Failed" — status.phase: Failed means the
+    # provisioner or the storage backend itself reported an error (not the
+    # benign "reclaimPolicy: Retain kept a stale claimRef" story
+    # persistentvolume-released-stuck tells), so this volume's data may be
+    # at risk and it will not be reused until an operator investigates. Same
+    # "field == literal, sustained" shape as that rule, different literal
+    # and a higher severity to match: a Released PV is idle but intact, a
+    # Failed one may not be.
+    severity: high
+    message: >-
+      PersistentVolume {{.Name}} has status.phase Failed for a sustained
+      period — the provisioner or the storage backend itself reported an
+      error on this volume, and its data may be at risk
+    condition:
+      field: status.phase
+      comparator: eq
+      value: Failed
+
+  # --- Fourth batch (BACKLOG.md E9, fourth pass) ---
+
+  - id: deployment-rollout-stalled
+    gvk: apps/v1/Deployment
+    reason: DeploymentRolloutStalled
+    class: fault
+    # issue-catalog DEPL-002 (category G — already non-dark, but neither
+    # checkDeploymentReplicas nor checkReplicaFailure reads updatedReplicas):
+    # the same "every pod Ready, still running the OLD version" gap the third
+    # pass's daemonset-rollout-stalled/statefulset-rollout-stalled rules
+    # closed for their kinds — Deployment has the identical field pair and
+    # never got the equivalent. Plain scalar field-vs-field lt, same
+    # mechanism.
+    #
+    # BUGS.md 129 (fixed 2026-09-03): apps/v1 DeploymentStatus.
+    # UpdatedReplicas is `json:"updatedReplicas,omitempty"` — a plain
+    # int32, confirmed against k8s.io/api/apps/v1 itself, the identical
+    # shape to DaemonSetStatus.UpdatedNumberScheduled (daemonset-rollout-
+    # stalled, above), which was live-confirmed broken on real rke2 for
+    # exactly this reason (CAPABILITIES.md §6cm). Flagged as "structurally
+    # exposed, not independently reproduced" when 129 was first found;
+    # confirming the field type here is enough to apply the same fix.
+    severity: medium
+    message: >-
+      Deployment {{.Namespace}}/{{.Name}} has status.updatedReplicas
+      ({{.Value}}) below spec.replicas ({{.CompareValue}}) for a sustained
+      period — the rolling update is not progressing, typically because a new
+      pod is not becoming Ready and the update strategy refuses to move past
+      it
+    condition:
+      field: status.updatedReplicas
+      compareField: spec.replicas
+      comparator: lt
+      absentFieldMeansZero: true
+
+  - id: deployment-scaled-to-zero
+    gvk: apps/v1/Deployment
+    reason: DeploymentScaledToZero
+    class: risk
+    # issue-catalog DEPL-011: "Scaled to zero unintentionally" —
+    # checkDeploymentReplicas (sweep_detector.go) explicitly skips desired ==
+    # 0 ("0/0 is trivially satisfied, nothing to report"), so a Deployment
+    # someone scaled to zero and forgot about is invisible to every existing
+    # check. "low", not "medium": scaling to zero is frequently deliberate
+    # (a paused environment, a canary at zero, an HPA minReplicas: 0 pattern),
+    # so this is a "does this look intentional?" prompt, not a fault claim.
+    severity: low
+    message: >-
+      Deployment {{.Namespace}}/{{.Name}} has spec.replicas=0 and has held
+      that state for a sustained period — if this was not deliberate (a
+      paused environment, a canary, or a scale-to-zero pattern), it is
+      currently serving nothing
+    condition:
+      field: spec.replicas
+      comparator: eq
+      value: "0"
+
+  - id: deployment-revision-history-limit-zero
+    gvk: apps/v1/Deployment
+    reason: DeploymentRevisionHistoryLimitZero
+    class: risk
+    # issue-catalog DEPL-015: "revisionHistoryLimit: 0 — no rollback possible"
+    # — the field defaults to 10 when unset, so this only ever matches an
+    # EXPLICIT 0, never an unconfigured Deployment (an absent field is "not
+    # found", never a match, per evaluateCondition). A standing
+    # misconfiguration rather than an active fault, hence "low": nothing is
+    # broken until the next bad rollout needs `kubectl rollout undo` and finds
+    # no previous ReplicaSet to go back to.
+    severity: low
+    message: >-
+      Deployment {{.Namespace}}/{{.Name}} has spec.revisionHistoryLimit=0 —
+      no previous ReplicaSet is retained, so `kubectl rollout undo` has
+      nothing to roll back to if the next rollout is bad
+    condition:
+      field: spec.revisionHistoryLimit
+      comparator: eq
+      value: "0"
+
+  - id: pod-evicted-not-cleaned-up
+    gvk: v1/Pod
+    reason: PodEvictedNotCleanedUp
+    class: risk
+    # issue-catalog TERM-013: "Evicted pods accumulating" — a genuinely
+    # different symptom from pod-stuck-terminating (second pass): an evicted
+    # Pod's object is terminal and static (nothing is trying to delete it —
+    # kubelet does not garbage-collect it on any default schedule), so it
+    # sits accumulating rather than failing to FINISH a deletion.
+    # status.reason is a plain top-level scalar Kubernetes itself sets to
+    # exactly "Evicted" on eviction — not a status.conditions list entry, so
+    # this is reachable by dot path where PROBE-004/similar list-indexed
+    # signals are not. "low": hygiene, not an active outage.
+    severity: low
+    message: >-
+      Pod {{.Namespace}}/{{.Name}} has status.reason=Evicted and has not been
+      cleaned up for a sustained period — this pod object is terminal and
+      will not be removed by anything automatically; accumulating evicted
+      pods is a hygiene problem, not an active outage
+    condition:
+      field: status.reason
+      comparator: eq
+      value: Evicted
+
+  - id: node-cordoned-sustained
+    gvk: v1/Node
+    reason: NodeCordonedSustained
+    class: risk
+    # issue-catalog NODE-010: "Node left cordoned after maintenance" —
+    # checkNodeNotReady/checkNodePressureConditions (sweep_detector.go) both
+    # read status.conditions; neither reads spec.unschedulable, so a node
+    # correctly drained for planned maintenance and never uncordoned again is
+    # invisible to both. The sustained gate (the same shared threshold every
+    # rule uses) is what turns "mid-maintenance, expected" into "forgotten,
+    # quietly shrinking scheduleable capacity".
+    severity: medium
+    message: >-
+      Node {{.Name}} has spec.unschedulable=true and has held that state for
+      a sustained period — if maintenance on this node finished, it was left
+      cordoned and is quietly removed from the scheduling pool
+    condition:
+      field: spec.unschedulable
+      comparator: eq
+      value: "true"
+
+  - id: argo-application-out-of-sync
+    gvk: argoproj.io/v1alpha1/Application
+    reason: ArgoApplicationOutOfSync
+    class: fault
+    # issue-catalog ARGO-001 (category AE, already non-dark via
+    # syncfailure.go's checkArgoSyncFailed and argo-application-health-degraded
+    # — third pass): a THIRD, distinct signal from both. checkArgoSyncFailed
+    # requires an actual failed or retrying sync operation;
+    # argo-application-health-degraded reads status.health.status (the
+    # APPLIED resources' health). This rule fires when status.sync.status is
+    # simply "OutOfSync" with neither of those true — Git and the live
+    # cluster disagree and nothing is even attempting to reconcile them
+    # (auto-sync disabled, paused, or a sync window blocking it). Plain
+    # field-vs-literal eq, sustained so a normal few-second window during a
+    # routine refresh never fires.
+    severity: medium
+    message: >-
+      Argo CD Application {{.Namespace}}/{{.Name}} has status.sync.status
+      OutOfSync for a sustained period with no sync in progress — the live
+      cluster and Git disagree and nothing is currently trying to reconcile
+      them
+    condition:
+      field: status.sync.status
+      comparator: eq
+      value: OutOfSync
+
+  - id: argo-application-sync-unknown
+    gvk: argoproj.io/v1alpha1/Application
+    reason: ArgoApplicationSyncUnknown
+    class: fault
+    # issue-catalog ARGO-006/007/008/009 (category AE): Argo CD cannot work out
+    # the desired state at all — a ComparisonError from an unreachable repo,
+    # expired credentials, a path that no longer exists, or a Helm/Kustomize
+    # render that fails. status.sync.status is then "Unknown", which neither
+    # argo-application-out-of-sync (needs "OutOfSync") nor
+    # argo-application-health-degraded (reads the LAST applied resources'
+    # health, often still Healthy) ever sees; checkArgoSyncFailed needs a sync
+    # operation, and none is attempted. Found dark by the loop campaign
+    # (2026-10-13, S33): an Application pointed at a removed path produced no
+    # finding at all. Sustained, like its neighbours, so a refresh's brief
+    # Unknown never fires.
+    severity: medium
+    message: >-
+      Argo CD Application {{.Namespace}}/{{.Name}} has status.sync.status
+      Unknown for a sustained period — Argo CD cannot compute the desired
+      state (a ComparisonError: repository unreachable or unauthorised, path
+      missing, or manifest generation failing), so nothing it manages is
+      being reconciled
+    condition:
+      field: status.sync.status
+      comparator: eq
+      value: Unknown
+
+  - id: flux-kustomization-suspended
+    gvk: kustomize.toolkit.fluxcd.io/v1/Kustomization
+    reason: FluxKustomizationSuspended
+    class: risk
+    # issue-catalog FLUX-011: "spec.suspend: true forgotten" — a suspended
+    # Kustomization correctly stops advancing status.observedGeneration, so
+    # flux-kustomization-reconciliation-stalled (second pass) never fires on
+    # it: the controller isn't stuck, it was told to stop. This is the only
+    # rule that makes "reconciliation is off and nobody meant that to be
+    # permanent" visible at all. Same shape as deployment-paused (third
+    # pass): a plain boolean spec field, eq.
+    severity: medium
+    message: >-
+      Flux Kustomization {{.Namespace}}/{{.Name}} has spec.suspend=true and
+      has held that state for a sustained period — the kustomize-controller
+      is not reconciling this object at all, so no later change to it (or to
+      the source it points at) will take effect until it is resumed
+    condition:
+      field: spec.suspend
+      comparator: eq
+      value: "true"
+
+  - id: flux-helmrelease-suspended
+    gvk: helm.toolkit.fluxcd.io/v2/HelmRelease
+    reason: FluxHelmReleaseSuspended
+    class: risk
+    # Same category AF, same shape and reasoning as
+    # flux-kustomization-suspended above, for Flux's other primary "does this
+    # actually get applied" resource kind.
+    severity: medium
+    message: >-
+      Flux HelmRelease {{.Namespace}}/{{.Name}} has spec.suspend=true and has
+      held that state for a sustained period — the helm-controller is not
+      reconciling this release at all, so no later change to it (or to the
+      chart/values it points at) will take effect until it is resumed
+    condition:
+      field: spec.suspend
+      comparator: eq
+      value: "true"
+
+  - id: flux-gitrepository-suspended
+    gvk: source.toolkit.fluxcd.io/v1/GitRepository
+    reason: FluxGitRepositorySuspended
+    class: risk
+    # Same shape again, for the source object flux-gitrepository-
+    # reconciliation-stalled (third pass) already reads a different field on
+    # — arguably the highest-impact of the three suspend rules, since a
+    # suspended GitRepository silently stops every Kustomization/HelmRelease
+    # that ultimately depends on it from ever seeing new commits, not just
+    # itself.
+    severity: medium
+    message: >-
+      Flux GitRepository {{.Namespace}}/{{.Name}} has spec.suspend=true and
+      has held that state for a sustained period — the source-controller is
+      not fetching new commits for this repository at all, which silently
+      stops every Kustomization/HelmRelease that depends on it from seeing
+      new content
+    condition:
+      field: spec.suspend
+      comparator: eq
+      value: "true"
+
+  - id: velero-backup-failed
+    gvk: velero.io/v1/Backup
+    reason: VeleroBackupFailed
+    class: fault
+    # issue-catalog DR-011-adjacent (category AQ, already non-dark via
+    # velero-backup-partially-failed — third pass): a different, WORSE
+    # literal — "Failed" means zero items were saved, not just some. Same
+    # "field == literal, sustained" shape, higher severity than
+    # PartiallyFailed to match: partial protection is still protection, none
+    # is none.
+    severity: high
+    message: >-
+      Velero Backup {{.Namespace}}/{{.Name}} finished with status.phase
+      Failed — nothing in this backup was saved; there is no restore point
+      from this run at all. Check `velero backup describe {{.Name}}
+      --details` for why
+    condition:
+      field: status.phase
+      comparator: eq
+      value: Failed
+
+  - id: velero-restore-partially-failed
+    gvk: velero.io/v1/Restore
+    reason: VeleroRestorePartiallyFailed
+    class: fault
+    # Velero's Restore CRD (a wholly new GVK/RBAC entry this pass — see
+    # deploy/helm/argus-agent/templates/clusterrole.yaml and
+    # lld/04-rbac-profiles.md §4, mirrored there first): the same
+    # PartiallyFailed shape as velero-backup-partially-failed, applied to
+    # Velero's other primary object. A Backup succeeding says nothing about
+    # whether restoring from it actually works — this is the check for that
+    # other half (issue-catalog category AQ, DR-006/DR-007-adjacent).
+    severity: high
+    message: >-
+      Velero Restore {{.Namespace}}/{{.Name}} finished with status.phase
+      PartiallyFailed — some items in this restore did not come back; check
+      `velero restore describe {{.Name}} --details` for which ones
+    condition:
+      field: status.phase
+      comparator: eq
+      value: PartiallyFailed
+
+  - id: velero-restore-failed
+    gvk: velero.io/v1/Restore
+    reason: VeleroRestoreFailed
+    class: fault
+    # Same new GVK as velero-restore-partially-failed above, the worse
+    # literal — nothing in this restore came back at all.
+    severity: high
+    message: >-
+      Velero Restore {{.Namespace}}/{{.Name}} finished with status.phase
+      Failed — nothing in this restore came back; the source data may still
+      be intact in the backup, but this restore attempt produced nothing
+    condition:
+      field: status.phase
+      comparator: eq
+      value: Failed
+
+  - id: statefulset-partition-blocks-rollout
+    gvk: apps/v1/StatefulSet
+    reason: StatefulSetPartitionBlocksRollout
+    class: risk
+    # BACKLOG.md item #6 / AR1, issue-catalog STS-011 ("partition left set —
+    # partial update stuck ... canary partition never lowered to 0"). Added
+    # 2026-08-29 alongside the message fix on statefulset-rollout-stalled
+    # above.
+    #
+    # A field-vs-value gt/sustained shape, same as node-cordoned-sustained/
+    # deployment-paused/the three flux-*-suspended rules: an explicit spec
+    # field left in a non-default state is itself the fact worth surfacing,
+    # independent of whether it was left there on purpose. Deliberately its
+    # OWN rule/reason rather than folded into statefulset-rollout-stalled's
+    # condition, because this format has no AND of two conditions (this
+    # file's own header comment) — a single condition cannot require BOTH
+    # "partition > 0" AND "a rollout is actually in progress/stalled", so
+    # this rule reports the standing fact (partition is nonzero, sustained)
+    # and leaves it to the reader — pointed here explicitly by
+    # statefulset-rollout-stalled's own message when both fire on the same
+    # object — to judge whether that is an active, forgotten canary or a
+    # deliberate ongoing partial rollout.
+    #
+    # "medium", matching statefulset-rollout-stalled/daemonset-rollout-
+    # stalled/deployment-rollout-stalled: a real, common misconfiguration
+    # (BACKLOG.md's own text: "correctly FIRES ... blocking a rollout"), but
+    # one a human can fix by lowering one field, not a live outage — every
+    # ordinal already up is healthy and serving.
+    severity: medium
+    message: >-
+      StatefulSet {{.Namespace}}/{{.Name}} has
+      spec.updateStrategy.rollingUpdate.partition={{.Value}} and has held
+      that value for a sustained period — ordinals below {{.Value}} are
+      intentionally frozen on their current revision by the controller, not
+      broken. If this was a canary partition that was never lowered back to
+      0 after being verified, every ordinal may be perfectly healthy and the
+      fix is to lower or clear this field, not to look for a failing pod
+    condition:
+      field: spec.updateStrategy.rollingUpdate.partition
+      comparator: gt
+      value: "0"
+
+  # --- BACKLOG.md E10 (2026-09-01): the format's first two new predicate
+  # kinds, "posture audit of a healthy object" and "a property of a SET of
+  # objects" ---
+
+  - id: job-missing-active-deadline-seconds
+    gvk: batch/v1/Job
+    reason: JobMissingActiveDeadlineSeconds
+    class: risk
+    # issue-catalog AP1/JOB-003, "Job hangs forever, no
+    # spec.activeDeadlineSeconds" — live-confirmed in CAPABILITIES.md §6bi as
+    # a real, currently invisible fault BEFORE this rule existed: a Job whose
+    # Pod loops forever waiting on something that never arrives produces
+    # only Normal events (Scheduled/Pulled/Created/Started) for its entire
+    # life — backoffLimit is never even consulted, because the container
+    # process never exits. Nothing in status is ever wrong; the fault is a
+    # missing SPEC field, present from the moment the Job is created and
+    # never changing — E10's "posture audit of a healthy object" kind,
+    # comparator notPresent (rules.go, BACKLOG.md E10), the first rule in
+    # this file to fire on absence rather than on a bad value.
+    #
+    # "low", not "medium": most Jobs genuinely don't need a deadline (a short
+    # batch job that either completes or fails fast), so this is a "should
+    # this have a ceiling?" prompt for anything long-running, not a fault
+    # claim — matching this file's own precedent (deployment-scaled-to-zero,
+    # deployment-revision-history-limit-zero) for a standing, often-
+    # intentional configuration choice rather than an active break.
+    severity: low
+    message: >-
+      Job {{.Namespace}}/{{.Name}} has no spec.activeDeadlineSeconds set — if
+      its Pod hangs waiting on something that never arrives (a dependency
+      that never comes up, a deadlock), nothing will ever time it out:
+      backoffLimit only counts actual container exits, and a Job whose
+      container process never exits never triggers it
+    condition:
+      field: spec.activeDeadlineSeconds
+      comparator: notPresent
+
+  - id: deployment-all-replicas-single-node
+    gvk: apps/v1/Deployment
+    reason: DeploymentAllReplicasOnSingleNode
+    class: risk
+    # issue-catalog AV1/DEPL-019, "every replica on one node" —
+    # live-confirmed in CAPABILITIES.md §6bm as a real, currently invisible
+    # fault BEFORE this rule existed: a Deployment with no
+    # podAntiAffinity/topologySpreadConstraints can have every one of its
+    # replicas land on the same Node (by an unlucky scheduler decision, or a
+    # nodeSelector that only matches one), and nothing about that fact is
+    # visible in any single Pod's own status — Available=True, every
+    # container Ready, zero Warning events. The risk (this workload's entire
+    # capacity going down with one Node) is a relationship that exists only
+    # ACROSS the replica set, never within any one Pod — E10's "a property
+    # of a SET of objects" kind, comparator allPodsSameValue (rules.go,
+    # BACKLOG.md E10): selectorField resolves this Deployment's own live Pods
+    # (spec.selector, the same field the API server itself uses to relate
+    # them), aggregateField reads each one's spec.nodeName, and the
+    # condition fires only once at least two Pods exist and every one of
+    # them agrees.
+    #
+    # "medium": nothing is down right now (matching pdb-blocks-all-
+    # disruptions' reasoning for a standing constraint rather than an active
+    # break), but unlike that rule this is a single point of failure for the
+    # whole workload, not merely a blocked maintenance operation — higher
+    # than deployment-scaled-to-zero's "low" (frequently deliberate),
+    # because nobody sets out to remove their own replica spread on purpose.
+    severity: medium
+    message: >-
+      Deployment {{.Namespace}}/{{.Name}} has all {{.Count}} of its replicas
+      scheduled on the same Node ({{.Value}}) and has held that state for a
+      sustained period — with no podAntiAffinity or topologySpreadConstraints
+      spreading them, that one Node going down takes this workload's entire
+      capacity with it
+    condition:
+      selectorField: spec.selector
+      aggregateField: spec.nodeName
+      comparator: allPodsSameValue
+
+  - id: statefulset-missing-pvc-retention-policy
+    gvk: apps/v1/StatefulSet
+    reason: StatefulSetMissingPVCRetentionPolicy
+    class: risk
+    # BACKLOG.md E10/AK1, STS-008: "scaling a StatefulSet down leaves Bound
+    # PVCs orphaned" — live-confirmed (CAPABILITIES.md §6bc, BUGS.md 118) as
+    # a real fault this cluster's own default (whenScaled: Retain) produces
+    # today. E10's own table names this the CHEAPEST open work left in that
+    # item specifically because it needs no new predicate kind: this is the
+    # exact same "posture audit of a healthy object" shape
+    # job-missing-active-deadline-seconds already uses a few rules up — a
+    # missing SPEC field, present (or absent) from creation, invisible in any
+    # live Pod's status. notPresent on
+    # spec.persistentVolumeClaimRetentionPolicy fires the moment a
+    # StatefulSet is created without one, which is the default for every
+    # StatefulSet on Kubernetes 1.35 (this cluster's own confirmed-live
+    # default, CAPABILITIES.md §6bc) — most StatefulSets with this posture
+    # will never actually be scaled down, so this is a standing-risk
+    # notification, not a claim that anything is broken yet.
+    #
+    # "low": matches job-missing-active-deadline-seconds' own reasoning for
+    # the identical shape (a should-this-be-set? prompt for a spec field
+    # that's fine 99% of the time) — this only becomes a REAL, active fault
+    # (BUGS.md 118's own orphaned-PVC incident) at the moment someone scales
+    # down, which this rule cannot see and does not claim to.
+    severity: low
+    message: >-
+      StatefulSet {{.Namespace}}/{{.Name}} has no
+      spec.persistentVolumeClaimRetentionPolicy set — on this cluster's
+      default (whenScaled: Retain), scaling it down later will leave the
+      removed ordinals' PersistentVolumeClaims Bound and orphaned rather than
+      deleted, with nothing watching them once they are no longer referenced
+      by any Pod
+    condition:
+      field: spec.persistentVolumeClaimRetentionPolicy
+      comparator: notPresent

@@ -1,0 +1,83 @@
+{{- if not (include "argus-agent.skip" .) }}
+{{- if and (or .Values.metrics.prometheusService.namespace .Values.metrics.prometheusService.name) (not (and .Values.metrics.prometheusService.namespace .Values.metrics.prometheusService.name)) }}
+{{- fail "metrics.prometheusService.namespace and metrics.prometheusService.name must be set TOGETHER (or both left empty to leave query_metrics disabled) — the chart refuses to guess which one you forgot, the same discipline remediate.enabled's own namespaces/allNamespaces check applies." }}
+{{- end }}
+{{- if and .Values.metrics.prometheusService.namespace .Values.metrics.prometheusService.name }}
+# argus-investigate-metrics — BACKLOG.md C4's query_metrics half.
+#
+# Unlike dryrun.yaml/policycontroller.yaml, this does NOT create a second
+# ServiceAccount or a second credential. query_metrics never writes anything,
+# so there is no ValidatingAdmissionPolicy to keep isolated from another
+# identity's grants the way dry_run_patch/open_execution_window need — it is
+# safe, and simpler, to widen the SAME argus-investigate identity every other
+# read-only tool already runs as.
+#
+# What this grants: `get` on ONE named Service's `proxy` subresource, in ONE
+# named namespace — narrowed by resourceNames, not a wildcard, matching this
+# chart's own least-privilege discipline (see templates/clusterrole.yaml's
+# header comment: "a future PR that adds a write verb ... is a security
+# regression, not a feature" — the same discipline applied here to scope
+# rather than to verbs). This is enough for the API server to forward a GET
+# to that Service's own HTTP endpoint
+# (/api/v1/namespaces/<namespace>/services/<name>:<port>/proxy/<path>) and
+# return the response — no separate network route from this agent's Pod to
+# Prometheus, because the API server itself does the dialing.
+#
+# A namespace-scoped Role, not a ClusterRole addition: RBAC's resourceNames
+# restriction narrows WHICH object within a resource type, never WHICH
+# namespace — a ClusterRole entry with resourceNames: [<name>] would still
+# match a same-named Service in every other namespace in the cluster. Binding
+# a namespace-scoped Role in exactly metrics.prometheusService.namespace is
+# what actually confines the grant to the one Service an operator configured,
+# the identical reasoning templates/remediate-role.yaml's own header gives
+# for preferring a namespaced Role over a cluster-wide grant.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: argus-investigate-metrics
+  namespace: {{ .Values.metrics.prometheusService.namespace }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [services/proxy]
+    verbs: [get]
+    # The proxy request names the Service as "name:port"
+    # (internal/agent/metrics_client.go), and RBAC matches resourceNames
+    # against that whole string, so the bare name alone grants nothing.
+    resourceNames:
+      - {{ .Values.metrics.prometheusService.name | quote }}
+      - {{ printf "%s:%v" .Values.metrics.prometheusService.name .Values.metrics.prometheusService.port | quote }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: argus-investigate-metrics
+  namespace: {{ .Values.metrics.prometheusService.namespace }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+subjects:
+  # The ServiceAccount the Deployment actually RUNS AS — argus-remediate when
+  # remediate.enabled, otherwise argus-investigate (the
+  # argus-agent.serviceAccountName helper; see its own doc comment and
+  # templates/identity-secret.yaml's identical fix for this same mistake).
+  # query_metrics is a read-only tool dispatched from the one Pod this chart
+  # runs, under whichever identity that Pod's spec.serviceAccountName
+  # actually is — a literal argus-investigate here would leave the grant on
+  # an identity the Pod never authenticates as the moment remediate.enabled
+  # is true, so the tool fails RBAC denial on exactly the clusters with the
+  # most setup invested (PROJECT.md B172). This is still additive on top of
+  # argus-investigate's own cluster-wide read ClusterRoleBinding, not a
+  # replacement for it — never argus-dryrun/argus-policy-controller, which
+  # are separate, independently-credentialed identities the Pod merely
+  # mounts a second token for (see templates/dryrun.yaml/policycontroller.yaml),
+  # not identities it runs as.
+  - kind: ServiceAccount
+    name: {{ include "argus-agent.serviceAccountName" . }}
+    namespace: {{ .Values.namespace.name }}
+roleRef:
+  kind: Role
+  name: argus-investigate-metrics
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+{{- end }}

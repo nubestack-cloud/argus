@@ -1,0 +1,4 @@
+{
+  "_comment": "Pre-existing, call-reachable Go vulnerability findings (govulncheck), recorded so scripts/govulncheck-gate.sh fails only on NEW findings. All 16 currently trace through internal/gitops/clone.go's go-git dependency (github.com/go-git/go-git/v5, github.com/go-git/go-billy/v5, github.com/cloudflare/circl via go-git's SSH transport, golang.org/x/crypto). Fixing these means bumping those modules in go.mod \u2014 a real, open dependency-upgrade task, tracked separately from PROJECT.md G10 (which built this scanning mechanism) rather than hidden by it. Do not add an entry here to silence a NEW finding \u2014 fix it, or get the owner's explicit sign-off first. Regenerate only when genuinely paying debt down: ./scripts/govulncheck-gate.sh --update-baseline",
+  "ids": []
+}

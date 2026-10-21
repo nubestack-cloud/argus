@@ -1,0 +1,42 @@
+-- BACKLOG.md E11's own named-but-open gap in migration 000087's mechanism:
+-- a model-sourced verdict that is cached and then never checked against a
+-- confident live sample -- not because E12's TTL/override paths haven't had
+-- time to fire, but because this (kind, condition_type) pair structurally
+-- never accumulates minStatisticalSampleCount live instances at once -- was
+-- treated exactly like a fully-resolved, evidence-backed verdict. If the
+-- model's one-time guess had the polarity backwards, every real occurrence
+-- of the actual fault read as "the healthy value" and was dropped, forever,
+-- with nothing anywhere recording that this had ever happened.
+--
+-- ever_confirmed tracks whether E12's own confident-sample-comparison path
+-- (internal/conditionpolarity.Resolve, the "cached.Source == model" branch)
+-- has EVER actually been reachable for this pair -- i.e. whether a live
+-- sample has ever cleared the confidence bar and been compared against this
+-- verdict, agreeing with it -- as opposed to merely "not right now." See
+-- that function's own comments for the full reasoning; the short version is
+-- that a per-call check (mark unverified whenever THIS call's sample isn't
+-- confident) would spuriously flag a Kind that usually has plenty of
+-- instances but happens to dip below the bar on one particular call, while
+-- this historical flag only ever flags a pair that has NEVER once been
+-- checkable -- the actual structural case this item is about.
+--
+-- Defaults:
+--   * A freshly-derived model verdict (Mechanism 2's first-ever ask for a
+--     pair) starts at false -- it has not yet been checked against
+--     anything live. Resolve flips it to true the first time a confident
+--     sample agrees with it.
+--   * A statistical verdict (Mechanism 1, or E12's confident-override path)
+--     starts at true -- it WAS real evidence about this cluster the moment
+--     it was cached, so there is nothing left to corroborate.
+-- Existing rows (all necessarily either statistical, or a model verdict
+-- that predates this column and has had no chance yet to be marked either
+-- way) default to true on backfill: a wrong pre-existing model verdict that
+-- happens to be uncorroborated will get one more TTL cycle (<=7 days, see
+-- polarity.go's modelVerdictTTL) before this column can even matter for it
+-- again, since Resolve re-derives (and re-checks from false) any
+-- model-sourced row once its TTL expires -- a one-time, bounded grace
+-- period preferred over retroactively guessing which existing rows were
+-- ever actually checked, which this migration has no evidence to do
+-- correctly.
+ALTER TABLE condition_polarity ADD COLUMN ever_confirmed boolean NOT NULL DEFAULT true;
+ALTER TABLE condition_polarity ALTER COLUMN ever_confirmed DROP DEFAULT;

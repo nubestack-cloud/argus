@@ -1,0 +1,78 @@
+# BACKLOG.md F26 — RBAC for the credential handed to the hub via
+# ARGUS_RENDER_SANDBOX_KUBECONFIG.
+#
+# This is a security-review finding, not a nicety: internal/render/sandbox.Runner
+# creates/deletes Pods, NetworkPolicies and Namespaces on whatever cluster that
+# kubeconfig points at, and nothing in the Go code enforces that the
+# credential is scoped down — a cluster-admin kubeconfig would "work" too,
+# and would be a real over-grant (DESIGN.md §18.1 T10/T11's category) for a
+# credential whose only job is to run short-lived render pods in ONE
+# namespace it does not even need to own end-to-end (an operator can
+# pre-create the namespace and drop the "namespaces" rule below entirely).
+#
+# Apply this (adjusting the namespace name to match
+# ARGUS_RENDER_SANDBOX_NAMESPACE) against the cluster the hub's render
+# sandbox is pointed at — which MUST be infrastructure the hub itself
+# administers, and MUST NOT be a customer's cluster. Nothing in this
+# package's Go code can verify that at runtime (the kubeconfig is just a
+# *rest.Config to it); this is the deploy-time control that keeps the
+# blast radius of that credential to "can churn short-lived pods in one
+# namespace" even if it were somehow pointed at the wrong place.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argus-render-sandbox
+  labels:
+    app.kubernetes.io/managed-by: argus
+    argus.io/purpose: render-sandbox
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: argus-render-sandbox
+  namespace: argus-render-sandbox
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: argus-render-sandbox
+  namespace: argus-render-sandbox
+rules:
+  # Pods: create/get/list/delete/exec — exactly what sandbox.Runner does
+  # (BuildPod, waitRunning, injectTree/runRenderCommand's exec, and the
+  # single-use teardown). No "update"/"patch" — a render pod is never
+  # mutated in place.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  # NetworkPolicies: create/delete — BuildNetworkPolicy's deny-all, applied
+  # before the pod it protects exists and removed with it.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "delete", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: argus-render-sandbox
+  namespace: argus-render-sandbox
+subjects:
+  - kind: ServiceAccount
+    name: argus-render-sandbox
+    namespace: argus-render-sandbox
+roleRef:
+  kind: Role
+  name: argus-render-sandbox
+  apiGroup: rbac.authorization.k8s.io
+---
+# Deliberately no ClusterRole/ClusterRoleBinding anywhere in this file — the
+# render sandbox never needs to see, create or touch anything outside its
+# own namespace. If the operator does not want this credential able to
+# create/delete the Namespace object itself (Runner.EnsureNamespace), grant
+# only the Role/RoleBinding above against a namespace created out-of-band
+# and drop the Namespace object here — Runner.EnsureNamespace already
+# treats "namespace already exists" as success, so nothing else needs to
+# change.

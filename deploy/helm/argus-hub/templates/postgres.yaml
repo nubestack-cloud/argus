@@ -1,0 +1,143 @@
+{{- if eq .Values.postgres.mode "bundled" }}
+{{- $fullname := include "argus-hub.fullname" . }}
+{{- $svc := include "argus-hub.postgresService" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $svc }}
+  labels: {{- include "argus-hub.labels" . | nindent 4 }}
+spec:
+  # Headless: a StatefulSet of one, addressed by its stable name. Not exposed
+  # outside the cluster at all.
+  clusterIP: None
+  ports:
+    - port: 5432
+      targetPort: postgres
+      name: postgres
+  selector:
+    {{- include "argus-hub.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullname }}-postgres
+  labels: {{- include "argus-hub.labels" . | nindent 4 }}
+  {{- if .Values.postgres.bundled.persistence.retainOnDelete }}
+  annotations:
+    # Keeps the PVC when the release is uninstalled. A chart that deletes the
+    # only copy of a customer's incident history on `helm uninstall` is a
+    # data-loss bug, so this is the default and turning it off is explicit.
+    "helm.sh/resource-policy": keep
+  {{- end }}
+spec:
+  replicas: 1
+  serviceName: {{ $svc }}
+  selector:
+    matchLabels:
+      {{- include "argus-hub.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres
+  template:
+    metadata:
+      labels:
+        {{- include "argus-hub.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: postgres
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+        seccompProfile: { type: RuntimeDefault }
+      # Enough for Postgres to checkpoint and shut down cleanly on SIGTERM
+      # rather than be killed mid-write and replay WAL on the next start.
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.bundled.image | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.bundled.database | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-db
+                  key: postgresPassword
+            # The image initialises into a subdirectory so a lost+found on the
+            # volume root cannot make initdb refuse to start — the standard
+            # gotcha with a PVC-backed Postgres.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", {{ .Values.postgres.bundled.database | quote }}]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources: {{- toYaml .Values.postgres.bundled.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            # Parallel queries allocate dynamic shared memory in /dev/shm, which
+            # a container runtime sizes at 64Mi by default. Concurrent queries
+            # outgrow that ("could not resize shared memory segment ... No space
+            # left on device"), and the failed write closes an agent's tunnel.
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.postgres.bundled.sharedMemory | quote }}
+        {{- if not .Values.postgres.bundled.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+  {{- if .Values.postgres.bundled.persistence.enabled }}
+  {{- /*
+    Kubernetes refuses any change to an existing StatefulSet's volume
+    template, so an upgrade keeps the one the database was created with: a
+    new default size, or a changed size or class, applies to new installs.
+    Growing an existing volume is the PVC patch in docs/INSTALL.md
+    ("Resizing the database volume"), which deletes this StatefulSet first.
+  */}}
+  {{- $size := .Values.postgres.bundled.persistence.size }}
+  {{- $class := .Values.postgres.bundled.persistence.storageClass }}
+  {{- with lookup "apps/v1" "StatefulSet" .Release.Namespace (printf "%s-postgres" $fullname) }}
+  {{- range .spec.volumeClaimTemplates }}
+  {{- if eq .metadata.name "data" }}
+  {{- $size = .spec.resources.requests.storage }}
+  {{- $class = .spec.storageClassName | default "" }}
+  {{- end }}
+  {{- end }}
+  {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with $class }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $size | quote }}
+  {{- end }}
+{{- end }}

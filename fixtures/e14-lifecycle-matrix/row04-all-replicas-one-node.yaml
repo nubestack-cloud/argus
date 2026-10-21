@@ -1,0 +1,108 @@
+# E14 lifecycle matrix, row 4 — "All replicas on one node".
+# Campaign context and the full row inventory: README.md in this directory.
+#
+# NODE NAMES: originally written against kind-argus-disposable
+# (argus-disposable-worker). Updated 2026-09-03 to my-rke2-cluster-worker-1
+# for this pass's run on `rke2` (its kubeconfig) — swap the
+# `kubernetes.io/hostname` value below again if this fixture is ever reused
+# against a third cluster with different node names.
+#
+# Why this row: a property of a SET of objects, not any single one —
+# issue-catalog AV1/DEPL-019. Every individual Pod reads Available=True,
+# Ready=True, zero Warning events; the risk (one Node going down takes the
+# whole workload with it) exists only in the relationship ACROSS the
+# replica set. This is the exact shape the declarative rule
+# `deployment-all-replicas-single-node` was built for (internal/agent/rules/
+# default-rules.yaml, comparator allPodsSameValue, reason
+# DeploymentAllReplicasOnSingleNode) — already live-verified once before
+# (2026-09-01; that evidence write-up is in git history) for the RULE
+# firing; this row is E14's job of checking whether that fired rule
+# actually becomes a useful INCIDENT
+# (right diagnosis, workable fix), which is a different question the
+# rule's own live-verification did not answer.
+#
+# This fixture forces the "all on one node" state deterministically via
+# nodeSelector (rather than leaving it to scheduler luck), so it is
+# reusable without depending on cluster occupancy at run time.
+#
+# Usage:
+#   kubectl apply -f row04-all-replicas-one-node.yaml
+#   kubectl -n e14-row04 get pods -o wide   # confirm all 3 share one NODE
+#   kubectl delete -f row04-all-replicas-one-node.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e14-row04
+  labels:
+    e14-lifecycle-matrix: "true"
+    e14-row: "row04-all-replicas-one-node"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: row04-single-node
+  namespace: e14-row04
+  labels:
+    app: row04-single-node
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: row04-single-node
+  template:
+    metadata:
+      labels:
+        app: row04-single-node
+    spec:
+      # No podAntiAffinity / topologySpreadConstraints at all — pinned to
+      # one node via nodeSelector to make the fault deterministic rather
+      # than relying on the scheduler happening to pack them together.
+      nodeSelector:
+        kubernetes.io/hostname: my-rke2-cluster-worker-1
+      containers:
+        - name: pause
+          image: busybox:1.36
+          command: ["sleep", "3600"]
+          resources:
+            requests:
+              cpu: "25m"
+              memory: "16Mi"
+---
+# Healthy control (E14 lifecycle matrix, row 14, "healthy control —
+# peer-relative / set-of-objects"): an otherwise identical Deployment
+# spread deliberately across the OTHER two nodes via podAntiAffinity, so
+# no two replicas ever land on the same node. Proves the rule/predicate
+# stays quiet on a properly spread workload, not just that it fires on a
+# collapsed one.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: row04-spread-control-healthy
+  namespace: e14-row04
+  labels:
+    app: row04-spread-control-healthy
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: row04-spread-control-healthy
+  template:
+    metadata:
+      labels:
+        app: row04-spread-control-healthy
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: row04-spread-control-healthy
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: pause
+          image: busybox:1.36
+          command: ["sleep", "3600"]
+          resources:
+            requests:
+              cpu: "25m"
+              memory: "16Mi"

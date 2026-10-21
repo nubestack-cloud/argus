@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.e2e.tsbuildinfo",
+    "target": "es2023",
+    "lib": ["ES2023", "DOM"],
+    "module": "esnext",
+    "types": ["node"],
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  // Deliberately its own project, referenced by neither tsconfig.json (the
+  // root `tsc -b` build graph `npm run build` runs) nor tsconfig.app.json —
+  // this suite runs against a real browser via `playwright test`, which
+  // transpiles its own spec files at run time and needs no build step, and
+  // keeping it out of the app's build graph means a Playwright-only type
+  // (e.g. `@playwright/test`'s globals) can never leak into, or be
+  // constrained by, the browser app's own tsconfig. Type-check on demand
+  // with `npx tsc -p tsconfig.e2e.json --noEmit`.
+  "include": ["e2e", "playwright.config.ts"]
+}

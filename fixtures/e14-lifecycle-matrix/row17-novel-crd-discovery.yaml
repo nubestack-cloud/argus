@@ -1,0 +1,118 @@
+# E14 lifecycle matrix, row 17 — unreviewed/discovery-only CRD kind, investigated
+# via the widened E13 surface. Also doubles as the fixture for row 16's
+# "confirm the E12 fix live" demonstration (see the companion note this
+# session added to that row's write-up, now in git history) —
+# both rows need a real Kind with real live population < minGenericPolarity-
+# Samples/minStatisticalSampleCount (5), and reusing one CRD/CR for both
+# means only one throwaway install/cleanup instead of two.
+# Campaign context and the full row inventory: README.md in this directory.
+#
+# This chains E11 piece 1 (discovery: NOT in supportedGVKs, only reachable
+# via internal/agent/discovery.go's ServerPreferredResources ∩ RBAC watch
+# set) -> pieces 2/3 (checkGenericConditions + the hub's condition-polarity
+# gate) -> E13 (describe_resource/list_resources' aggressive-redaction path
+# for an unreviewed kind) -> a REAL /analyze investigation loop.
+#
+# No status subresource is defined below on purpose: without one, `status`
+# is an ordinary field and a plain `kubectl apply` (or `create`) sets it in
+# the same call, with no separate `kubectl patch --subresource=status`
+# needed. `status.conditions[0].lastTransitionTime` is deliberately
+# backdated (~12 minutes before this fixture was ever applied) so the
+# generic condition-anomaly predicate's sustained-window check
+# (defaultSweepSustainedThreshold, sweep_detector.go, 10 minutes) is already
+# satisfied the FIRST time this object is ever observed — the only thing
+# this fixture still has to wait on for real is internal/agent/discovery.go's
+# own DefaultWatchSetRefreshInterval (15 minutes) noticing the new CRD at
+# all, since the standing rke2 agent (a long-running process, not restarted
+# for this) refreshes its discovered watch set lazily, at most once per 15
+# minutes, from whatever it last cached.
+#
+# RBAC note: the standing rke2 agent process (`/tmp/argus-agent-r8`) runs
+# against a cluster-admin kubeconfig, whose identity is `system:admin`
+# (`system:masters` group, confirmed via `kubectl auth whoami`) — cluster-
+# admin, not the narrower `argus-investigate` ClusterRole a real Helm-
+# deployed agent would carry. Its SelfSubjectRulesReview therefore already
+# authorizes get/list/watch on this brand-new CRD with ZERO RBAC change of
+# any kind — no ClusterRole edit, no ClusterRoleBinding, nothing to widen or
+# revert. This is a fact about how THIS dev-cluster agent happens to be
+# running, not a decision this session made or a workaround for the parked
+# E11 RBAC question (which is about a real Helm-deployed agent's curated
+# ClusterRole, deploy/helm/argus-agent/templates/clusterrole.yaml, and stays
+# untouched, unread even, by this fixture).
+#
+# Usage:
+#   kubectl apply -f row17-novel-crd-discovery.yaml
+#   # wait up to ~15-20 min for discovery + a sweep to observe it, then check
+#   # Postgres for a Finding/incident naming Kind=RowProbe, and/or:
+#   kubectl -n e14-row17 get rowprobe row17-probe -o yaml
+#   kubectl delete -f row17-novel-crd-discovery.yaml
+#   kubectl delete crd rowprobes.e14test.argus.internal   # if apply -f didn't already
+#
+# LIVE RUN, 2026-09-03, rke2 (full evidence write-up in git history): full
+# chain confirmed end to end for the first time. Finding
+# fnd_01m1mqzx88femckk8vv5cyx2yq (GenericConditionAnomaly:Ready,
+# "[polarity unverified]", severity low) opened incident
+# inc_01m1mqzx88txc3q91cpjn4h9e1 at 22:39:03 -- E11 piece 1's discovery
+# path reached a kind genuinely outside supportedGVKs. Correctly excluded
+# from C12 (low severity); manually analysed
+# (an_01m1mra5qw637nqk7q6bmtw0q2, confidence 0.40, landed on Diagnosed
+# rather than a false-confident guess). The analysis's OWN text states
+# "the resource's status fields are redacted in the describe output" --
+# live confirmation E13's aggressive redaction is active for this
+# unreviewed kind, not merely configured. condition_polarity has zero rows
+# for kind='RowProbe' (checked directly): the single-instance population
+# never reached minStatisticalSampleCount/minGenericPolaritySamples, so
+# on its own this fixture does NOT demonstrate row 16 (a WRONG CACHED
+# verdict corrected) -- there was no cached verdict to correct. Namespace
+# and CRD deleted and confirmed gone afterward.
+#
+# FOLLOW-UP (same day; that write-up is in git history): row 16 WAS closed for real
+# using this exact CRD/CR, by seeding a deliberately wrong verdict directly
+# into condition_polarity for ('RowProbe','Ready') before the real fault
+# fired, then confirming it surfaced marked [polarity unverified] instead
+# of being silently dropped. Not achieved by this fixture file alone --
+# needs the INSERT documented in that write-up, run against a fresh instance
+# of this same CRD.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e14-row17
+  labels:
+    e14-lifecycle-matrix: "true"
+    e14-row: "row17-novel-crd-discovery"
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: rowprobes.e14test.argus.internal
+spec:
+  group: e14test.argus.internal
+  scope: Namespaced
+  names:
+    kind: RowProbe
+    plural: rowprobes
+    singular: rowprobe
+    listKind: RowProbeList
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: e14test.argus.internal/v1
+kind: RowProbe
+metadata:
+  name: row17-probe
+  namespace: e14-row17
+spec:
+  purpose: "E14 lifecycle matrix row 17/16 fixture — a genuinely novel CRD kind, unreviewed (not in supportedGVKs), reachable only via discovery"
+status:
+  conditions:
+    - type: Ready
+      status: "False"
+      reason: DeliberatelyBroken
+      message: "Row 17/16 fixture: this condition is deliberately sustained False to trip checkGenericConditions"
+      lastTransitionTime: "2026-09-03T22:39:03Z"

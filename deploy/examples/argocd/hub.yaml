@@ -1,0 +1,40 @@
+# The ARGUS hub, installed and upgraded by Argo CD.
+#
+# Change the two marked values, commit this file to a repository Argo CD
+# watches (or `kubectl apply -n argocd -f hub.yaml`), and Argo CD installs the
+# hub. Upgrading is changing targetRevision.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argus-hub
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: registry-1.docker.io/nubestack   # OCI: no oci:// prefix in Argo CD
+    chart: argus-hub-chart
+    targetRevision: 0.2.0
+    helm:
+      releaseName: argus-hub
+      valuesObject:
+        ingress:
+          host: argus.example.com             # CHANGE: where the hub is reached
+          clusterIssuer: letsencrypt          # CHANGE: your cert-manager ClusterIssuer, or remove
+        # The hub chart installs this cluster's agent. Argo CD renders charts
+        # without reading the cluster, so it cannot see an agent you already
+        # installed here: if there is one, uncomment this.
+        # localAgent:
+        #   enabled: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argus-system
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions:
+      - CreateNamespace=true
+      # The chart keeps generated Secrets (admin password, database password)
+      # across upgrades by reading them back; let Argo CD leave them alone.
+      - RespectIgnoreDifferences=true
+  ignoreDifferences:
+    - kind: Secret
+      jsonPointers: [/data]

@@ -1,0 +1,9 @@
+# Chart default. Overridden by values-prod.yaml whenever that file is also
+# supplied (helm template -f values.yaml -f values-prod.yaml — later file
+# wins), which mirrors an Argo Application's spec.source.helm.valueFiles
+# listing both. Editing replicaCount HERE alone therefore never changes the
+# rendered Deployment.
+replicaCount: 1
+image:
+  repository: busybox
+  tag: "1.36"

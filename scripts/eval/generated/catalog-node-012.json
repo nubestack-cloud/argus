@@ -1,0 +1,73 @@
+{
+  "id": "catalog-node-012",
+  "description": "Node & kubelet: Node with a stale/unexpected taint. Catalogue entry NODE-012 (category AC, rank 3 of the catalogue's categories by size, 38 entries; silent=true, risk=medium, channels=inPlace). Selected because it filled the least-covered (risk, channel) cell medium/inPlace. Correct answer: an honest \"could not determine\" at low confidence — every probe this fixture answers comes back clean, which is what makes this a silent fault, and naming a cause off the catalogue's list anyway would be a guess the evidence does not support.",
+  "provenance": "synthesized-from-catalog",
+  "catalogId": "NODE-012",
+  "category": "AC",
+  "categoryName": "Node & kubelet",
+  "limitation": "Synthesized from issue-catalog metadata, not from recorded cluster output: the toolResponses below present this entry's STATED signals through the real tool surface. This case grades whether the investigation maps a known signal to one of the catalogue's candidate root causes. It does not prove anything about behaviour on a real cluster, and a green score on it must not be read as cluster coverage.",
+  "finding": {
+    "detectorId": "k8s-sweep",
+    "severity": "high",
+    "namespace": "eval-ac",
+    "objectName": "node-012-7a1e0",
+    "reason": "SweepObservation",
+    "message": "Node with a stale/unexpected taint — Workloads not scheduling",
+    "occurrenceCount": 6
+  },
+  "toolResponses": {
+    "describe_resource": [
+      {
+        "data": {
+          "events": [],
+          "object": {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+              "name": "node-012-7a1e0",
+              "namespace": "eval-ac"
+            },
+            "status": {
+              "phase": "Running"
+            }
+          }
+        }
+      }
+    ],
+    "get_events": [
+      {
+        "data": []
+      }
+    ],
+    "get_gitops_ownership": [
+      {
+        "data": {
+          "managed_by": "none"
+        }
+      }
+    ],
+    "get_logs": [
+      {
+        "data": {
+          "lines": []
+        }
+      }
+    ],
+    "get_owner_chain": [
+      {
+        "data": []
+      }
+    ],
+    "list_resources": [
+      {
+        "data": []
+      }
+    ]
+  },
+  "expected": {
+    "type": "insufficient",
+    "maxConfidenceForInsufficient": 0.4,
+    "minIterations": 2,
+    "maxIterations": 8
+  }
+}

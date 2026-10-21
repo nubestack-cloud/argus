@@ -1,0 +1,330 @@
+# Release gate and release build.
+#
+# A release is a versioned, scanned and signed set of artifacts with SBOMs:
+# multi-arch images, OCI Helm charts, argusctl binaries (audit verify), and
+# release notes.
+#
+# Triggers:
+#   - pull_request into main from a release/* branch: the gate only (smoke
+#     test and Playwright against a disposable kind cluster). Other pull
+#     requests skip it at no cost. Make the `gate` job a required check on
+#     main so a release candidate cannot merge red.
+#   - push of a v*.*.* tag: the gate again, then `publish`.
+#
+# Publishing to Docker Hub needs the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN
+# secrets. Without them every artifact is still built, scanned and attached
+# to the GitHub release, but nothing is pushed or image-signed.
+name: Release
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    tags:
+      - 'v*.*.*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  SYFT_VERSION: v1.18.1
+  TRIVY_VERSION: v0.58.1
+  COSIGN_VERSION: v2.4.1
+
+jobs:
+  gate:
+    name: Release gate (smoke test + Playwright against a real cluster)
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/'))
+    runs-on: ubuntu-latest
+    env:
+      ARGUS_VERSION: ci   # compose runs the image built below
+      # Both sides of the admin credential, from one place: the hub writes this
+      # password into the fresh database, and the smoke test (ARGUS_ADMIN_PASSWORD)
+      # and Playwright (ARGUS_E2E_PASSWORD) sign in with it.
+      ARGUS_BOOTSTRAP_PASSWORD: dev-admin-password-123
+      ARGUS_ADMIN_PASSWORD: dev-admin-password-123
+      ARGUS_E2E_PASSWORD: dev-admin-password-123
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: docker build (hub image)
+        run: docker build --target hub -t nubestack/argus-hub:ci .
+
+      # A disposable cluster for the smoke test's real-cluster sections, which
+      # fail (rather than skip) without one.
+      - name: create disposable kind cluster
+        uses: helm/kind-action@v1.15.0
+        with:
+          cluster_name: argus-disposable
+          # A path, not inline YAML: the action passes it to `kind --config`.
+          config: .github/kind-disposable.yaml
+          wait: 120s
+
+      - name: point smoke-test.sh at the disposable cluster
+        run: |
+          mkdir -p "$HOME/key"
+          kind get kubeconfig --name argus-disposable > "$HOME/key/kind-argus-disposable.yaml"
+          echo "ARGUS_DISPOSABLE_KUBECONFIG=$HOME/key/kind-argus-disposable.yaml" >> "$GITHUB_ENV"
+
+      - name: docker compose up
+        run: docker compose -f deploy/compose/docker-compose.yaml up -d
+
+      # /readyz checks the database's row-level-security preconditions, not
+      # only that the process is listening.
+      - name: wait for the hub to be ready
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8080/readyz > /dev/null; then
+              echo "hub is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::hub never became ready"
+          docker compose -f deploy/compose/docker-compose.yaml logs
+          exit 1
+
+      - name: run scripts/smoke-test.sh
+        run: ./scripts/smoke-test.sh
+
+      - name: npm ci (Playwright)
+        working-directory: web
+        run: npm ci
+
+      - name: install Playwright's Chromium
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      - name: run the Playwright suite
+        working-directory: web
+        run: npm run test:e2e
+
+      - name: upload the Playwright HTML report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: web/playwright-report/
+          retention-days: 14
+
+      - name: hub-api logs (on failure, for triage)
+        if: failure()
+        run: docker compose -f deploy/compose/docker-compose.yaml logs hub-api hub-migrate
+
+      - name: docker compose down
+        if: always()
+        run: docker compose -f deploy/compose/docker-compose.yaml down -v
+
+      - name: delete disposable kind cluster
+        if: always()
+        run: kind delete cluster --name argus-disposable || true
+
+  publish:
+    name: Build, scan, SBOM, sign, publish (tag pushes only)
+    needs: gate
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the GitHub release
+      id-token: write   # cosign keyless signing with this job's OIDC identity
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: derive version from the tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # The images ship THIRD_PARTY_NOTICES.md; refuse to publish it stale.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: third-party notices are current
+        run: |
+          go install github.com/google/go-licenses/v2@v2.0.1
+          (cd web && npm ci)
+          PATH="$(go env GOPATH)/bin:$PATH" scripts/third-party-notices.py --check
+
+      # No image needs emulation (the Dockerfile cross-compiles on the build
+      # platform); QEMU is a safety net.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: install syft (SBOM) and trivy (image scan)
+        run: |
+          curl -sSfL "https://raw.githubusercontent.com/anchore/syft/${SYFT_VERSION}/install.sh" | sh -s -- -b /usr/local/bin "$SYFT_VERSION"
+          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/${TRIVY_VERSION}/contrib/install.sh" | sh -s -- -b /usr/local/bin "$TRIVY_VERSION"
+
+      - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      # `secrets` cannot be read in `if:`, so the presence check is here.
+      - name: docker login
+        id: login
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          if [[ -n "$DOCKERHUB_TOKEN" ]]; then
+            echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no DOCKERHUB_TOKEN secret: building images as local OCI archives, not pushing"
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: build images (multi-arch)
+        run: |
+          v="${{ steps.version.outputs.version }}"
+          for target in hub agent cli-runner; do
+            if [[ "${{ steps.login.outputs.pushed }}" == "true" ]]; then
+              out=(-t "nubestack/argus-${target}:${v}" --push)
+            else
+              out=(-o "type=oci,dest=/tmp/argus-${target}.oci.tar")
+            fi
+            docker buildx build --platform linux/amd64,linux/arm64 --target "$target" \
+              --build-arg VERSION="$v" "${out[@]}" .
+          done
+
+      - name: generate SBOMs (SPDX)
+        run: |
+          v="${{ steps.version.outputs.version }}"
+          mkdir -p dist/sbom
+          for name in hub agent cli-runner; do
+            if [[ "${{ steps.login.outputs.pushed }}" == "true" ]]; then
+              src="nubestack/argus-${name}:${v}"
+            else
+              src="oci-archive:/tmp/argus-${name}.oci.tar"
+            fi
+            syft "$src" -o spdx-json="dist/sbom/argus-${name}.spdx.json"
+          done
+
+      # The full report (every severity) is attached to the release; the
+      # gate is CRITICAL findings, never silenced with an ignore file.
+      - name: scan images (trivy)
+        run: |
+          v="${{ steps.version.outputs.version }}"
+          mkdir -p dist/scan
+          for name in hub agent cli-runner; do
+            if [[ "${{ steps.login.outputs.pushed }}" == "true" ]]; then
+              ref=("nubestack/argus-${name}:${v}")
+            else
+              ref=(--input "/tmp/argus-${name}.oci.tar")
+            fi
+            trivy image "${ref[@]}" --format json --output "dist/scan/argus-${name}.trivy.json"
+            trivy image "${ref[@]}" --severity CRITICAL --exit-code 1 --format table
+          done
+
+      # The charts pin the images just pushed by digest and carry the release
+      # version, so `helm install ... --version <v>` installs exactly this
+      # release.
+      - name: package (and publish) Helm charts
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          v="${{ steps.version.outputs.version }}"
+          if [[ "${{ steps.login.outputs.pushed }}" == "true" ]]; then
+            echo "$DOCKERHUB_TOKEN" | helm registry login registry-1.docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+            scripts/release/package-charts.sh --version "$v" --tag "$v" --out dist/charts --push oci://registry-1.docker.io/nubestack
+          else
+            scripts/release/package-charts.sh --version "$v" --tag "$v" --out dist/charts --no-digests
+          fi
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # argusctl audit verify: re-checks the audit log's hash chain straight
+      # against Postgres, independently of the hub.
+      - name: build argusctl binaries
+        run: |
+          mkdir -p dist/argusctl
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build \
+              -ldflags "-X argus/internal/buildinfo.version=${{ steps.version.outputs.version }}" \
+              -o "dist/argusctl/argusctl-${os}-${arch}" ./cmd/argusctl
+          done
+
+      # Keyless signing (Sigstore) with this workflow's GitHub OIDC identity.
+      # Verify with:
+      #   cosign verify <ref> \
+      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      #     --certificate-identity-regexp '^https://github.com/nubestack-collab/ARGUS/\.github/workflows/release\.yml@refs/tags/v'
+      - name: sign packaged charts (blobs)
+        run: |
+          for f in dist/charts/*.tgz; do
+            cosign sign-blob --yes --bundle "${f}.bundle" "$f"
+          done
+
+      - name: sign images and OCI charts (only when pushed)
+        if: steps.login.outputs.pushed == 'true'
+        run: |
+          v="${{ steps.version.outputs.version }}"
+          for ref in argus-hub argus-agent argus-cli-runner argus-hub-chart argus-agent-chart; do
+            digest="$(docker buildx imagetools inspect "docker.io/nubestack/${ref}:${v}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            cosign sign --yes "docker.io/nubestack/${ref}@${digest}"
+          done
+
+      # One flat SHA256SUMS over every file attached to the release, named as
+      # the release lists them.
+      - name: checksums
+        run: |
+          find dist -type f -not -name SHA256SUMS -print0 \
+            | xargs -0 -I{} sh -c 'cd "$(dirname "{}")" && sha256sum "$(basename "{}")"' > dist/SHA256SUMS
+          cat dist/SHA256SUMS
+
+      # This version's section of CHANGELOG.md, or GitHub's generated notes
+      # when the changelog has none.
+      - name: release notes
+        id: notes
+        run: |
+          v="${{ steps.version.outputs.version }}"
+          awk -v v="$v" '
+            $0 ~ "^## \\[?" v "\\]?([ ]|$)" { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > dist/RELEASE_NOTES.md || true
+          if [[ -s dist/RELEASE_NOTES.md ]]; then
+            echo "args=--notes-file dist/RELEASE_NOTES.md" >> "$GITHUB_OUTPUT"
+          else
+            echo "args=--generate-notes" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ "$v" == *-* ]]; then echo "prerelease=--prerelease" >> "$GITHUB_OUTPUT"; fi
+
+      - name: upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: argus-${{ steps.version.outputs.version }}-release-artifacts
+          path: dist/
+          retention-days: 90
+
+      - name: create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files=(dist/sbom/*.json dist/scan/*.json dist/charts/*.tgz dist/charts/*.bundle dist/argusctl/* dist/SHA256SUMS)
+          gh release create "${{ github.ref_name }}" --title "ARGUS ${{ steps.version.outputs.version }}" \
+              ${{ steps.notes.outputs.args }} ${{ steps.notes.outputs.prerelease }} "${files[@]}" \
+            || gh release upload "${{ github.ref_name }}" "${files[@]}" --clobber

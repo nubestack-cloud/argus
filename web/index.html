@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- The aperture mark, served from public/favicon.svg. Same mark as the
+         in-app ArgusLogoMark, but deliberately a second drawing of it: that
+         file is hinted for 16 to 32 pixels and states its own colour, because
+         a favicon is rasterized with no page to inherit from. It explains both
+         choices, and the double-hyphen rule that once left it malformed and
+         invisible. src/brand-assets.test.ts is the guard. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ARGUS</title>
+    <script>
+      // Applies a persisted manual theme override (see src/theme.ts) before
+      // the first paint, so a returning user who chose "dark" never sees a
+      // flash of the system/light theme while the app boots. Absence of a
+      // stored value (or of localStorage itself) leaves the attribute unset,
+      // which is exactly "follow the OS setting" — the same default as
+      // before this override existed.
+      ;(function () {
+        try {
+          var theme = localStorage.getItem('argus.theme')
+          if (theme === 'light' || theme === 'dark') {
+            document.documentElement.setAttribute('data-theme', theme)
+          }
+        } catch (e) {
+          // ignore — falls back to the OS setting
+        }
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

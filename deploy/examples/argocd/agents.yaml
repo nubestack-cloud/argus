@@ -1,0 +1,52 @@
+# The ARGUS agent on every cluster Argo CD manages, with one fleet token.
+#
+# 1. In ARGUS: Clusters -> Fleet tokens -> Issue fleet token. Tick "accept
+#    automatically" to skip approving each cluster by hand.
+# 2. Put the token in every target cluster as the Secret
+#    argus-system/argus-enrollment-token (key: token), with your secret
+#    manager: External Secrets, Sealed Secrets, Vault. Never commit it in
+#    plain text.
+# 3. Change the marked value and apply this ApplicationSet. Each cluster Argo
+#    CD knows gets an agent named after it (the hub's own cluster already has
+#    one, installed with the hub).
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: argus-agent
+  namespace: argocd
+spec:
+  goTemplate: true
+  generators:
+    # Every registered remote cluster, unless labelled argus.io/agent=false.
+    # Any selector leaves out Argo CD's own (in-cluster) cluster, which
+    # already has its agent from the hub chart.
+    - clusters:
+        selector:
+          matchExpressions:
+            - { key: argus.io/agent, operator: NotIn, values: ["false"] }
+  template:
+    metadata:
+      name: 'argus-agent-{{ .name }}'
+    spec:
+      project: default
+      source:
+        repoURL: registry-1.docker.io/nubestack
+        chart: argus-agent-chart
+        targetRevision: 0.2.0
+        helm:
+          releaseName: argus-agent
+          valuesObject:
+            hub:
+              apiUrl: https://argus.example.com   # CHANGE: the hub's URL
+            enrollment:
+              tokenSecretRef:
+                name: argus-enrollment-token
+            displayName: '{{ .name }}'
+            namespace:
+              create: false
+      destination:
+        server: '{{ .server }}'
+        namespace: argus-system
+      syncPolicy:
+        automated: { prune: true, selfHeal: true }
+        syncOptions: [CreateNamespace=true]

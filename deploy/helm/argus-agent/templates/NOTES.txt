@@ -1,0 +1,18 @@
+ARGUS agent {{ .Chart.AppVersion }} installed into namespace {{ .Values.namespace.name }} as {{ .Release.Name }}.
+
+The agent enrolls against {{ .Values.hub.apiUrl }}; accept the cluster in the
+hub's Clusters page when it shows as pending approval, then it connects over
+the mTLS tunnel the hub hands back.
+{{- if include "argus-agent.hubCAEnabled" . }}
+
+Hub CA: the agent trusts the extra CA from {{ if dig "caBundle" "" .Values.hub }}hub.caBundle{{ else }}Secret {{ .Values.hub.caSecretRef.name }}, key {{ .Values.hub.caSecretRef.key | default "ca.crt" }}{{ end }}
+in addition to its system roots for HTTPS to hub.apiUrl.
+{{- end }}
+{{- if .Values.persistence.storageClassName }}
+
+DEPRECATED: persistence.storageClassName is set. It still works, but rename it
+to persistence.storageClass — the name the hub chart uses.
+{{- if and .Values.persistence.storageClass (ne .Values.persistence.storageClass .Values.persistence.storageClassName) }}
+Both are set and differ; persistence.storageClass ({{ .Values.persistence.storageClass }}) wins.
+{{- end }}
+{{- end }}

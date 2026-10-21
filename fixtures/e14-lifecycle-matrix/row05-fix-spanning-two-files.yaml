@@ -1,0 +1,45 @@
+# E14 lifecycle matrix, row 5 — "Fix spanning two files" (multi-file PR, one
+# commit, both diffs rendered).
+# Campaign context and the full row inventory: README.md in this directory.
+#
+# This row is not a Kubernetes manifest fixture like rows 1/2/3/4 — it
+# exercises the GitOps/PR remediation CHANNEL (internal/gitops, F22's
+# whole-file-edit grammar), not raw cluster scheduling, so there is nothing
+# to `kubectl apply` here. Recorded as a YAML file anyway (rather than a
+# markdown note) to keep this directory's "one file per matrix row"
+# convention intact and machine-greppable.
+#
+# There is no dedicated fixture to build: the existing GitOps test
+# infrastructure (see the "project-gitops-test-infra" memory /
+# RUNBOOK.md's "The GitOps test environment") already has exactly the
+# awkward, multi-document, has-something-to-lose repository this needs —
+# https://github.com/example-org/argocd-argus-test — with apps/api and
+# apps/web as two independently-synced Argo Applications in the SAME repo.
+# A row-5 run means: induce a fault whose correct fix touches both
+# apps/api/deployment.yaml and apps/web/deployment.yaml (e.g. a shared
+# ConfigMap reference or label two Deployments both need corrected the
+# same way), let ARGUS's analysis loop propose the fix, and confirm the
+# resulting pull request's ONE commit contains both files' diffs, rendered.
+#
+# NOT run this pass (2026-09-03): this repo lives on the
+# `rke2` Argo CD test setup, which E14's own scope explicitly does NOT
+# authorize for this campaign (only kind-argus-disposable is), and the
+# disposable cluster has no Argo CD/GitOps controller installed at all.
+# Running this row for real needs either (a) standing up a GitOps
+# controller + this same repo shape against kind-argus-disposable, or (b)
+# an explicit, separate decision to use the rke2 GitOps infra for this one
+# row — an owner decision, not something to take unilaterally (matching the
+# standing precedent of not touching rke2 without asking).
+#
+# RUN 2026-09-06 (E14 unblocked; PROJECT.md "Decided" 2026-09-06). Built
+# apps/e14row5/{deployment.yaml,configmap.yaml} in a fresh, isolated clone
+# of the GitOps test repo (not the shared checkout, not apps/api or
+# apps/web) — one Deployment, two containers, two INDEPENDENT bugs (main's
+# memory limit; sidecar's ConfigMap-sourced MODE value) that both must be
+# fixed. Auto-analyzed (confidence 1.00), correctly named both files as
+# root cause, produced ONE OpenPR plan naming both, opened as ONE PR
+# (argocd-argus-test#76, confirmed via the GitHub API: one commit, both
+# files, +1/-1 each — not two PRs). Merged, Argo synced, both containers
+# healthy. resolution_kind='remediated' confirmed directly in Postgres.
+# Fixture and GitOps commits fully reverted; namespace and
+# Argo Application removed.

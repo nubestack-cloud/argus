@@ -1,0 +1,183 @@
+/* Transcribed verbatim from argus-login-01-sentinel-field.html.
+ *
+ * FOUR MECHANICAL CHANGES, all forced by moving a document stylesheet into a
+ * CSS module. Nothing else differs — no value retyped, no easing substituted,
+ * no property dropped.
+ *
+ *   1. `:root` -> `.root`. The custom properties inherit to every descendant
+ *      exactly as they did from the document root.
+ *   2. `html,body{height:100%}` + `body{...}` -> `.root{position:fixed;inset:0}`
+ *      plus the body's own declarations. The source owns the whole document;
+ *      a route cannot, and `overflow:hidden` on the real <body> would break
+ *      every other screen in the app. Fixed + inset:0 + overflow:hidden gives
+ *      the same full-viewport, non-scrolling frame.
+ *   3. `*{box-sizing;margin;padding}` -> `.root *{...}` plus the same on
+ *      `.root` itself, since the reset no longer reaches the container.
+ *   4. `#field` -> `.fieldCanvas`. CSS Modules scopes ids too, and `.field` is
+ *      already taken by the form rows, so the canvas gets its own class. The
+ *      declarations are untouched.
+ *
+ * The `prefers-reduced-motion` block at the end is likewise scoped to
+ * `.root *` rather than `*`.
+ */
+
+.root {
+  --black: #000;
+  --ink-900: #05090A;
+  --ink-800: #0A1213;
+  --ink-700: #111C1D;
+  --teal: #3C7D7D;
+  --teal-bright: #6FB3B3;
+  --teal-dim: rgba(60,125,125,.22);
+  --amber: #F0975B;
+  --deep: #14322F;
+  --light: #EAF7F5;
+  --muted: #7E9494;
+  --danger: #E2585B;
+  --ease-expo: cubic-bezier(.16,1,.3,1);
+  --ease-smooth: cubic-bezier(.65,0,.35,1);
+}
+.root, .root *{box-sizing:border-box;margin:0;padding:0}
+.root{
+  position:fixed;inset:0;
+  background:var(--black);
+  font-family:Inter,system-ui,-apple-system,sans-serif;
+  color:var(--light);
+  overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+.fieldCanvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+.vignette{
+  position:fixed;inset:0;pointer-events:none;
+  background:radial-gradient(ellipse 85% 75% at 50% 45%,transparent 0%,rgba(0,0,0,.3) 70%,rgba(0,0,0,.75) 100%);
+}
+.stage{
+  position:relative;z-index:2;min-height:100vh;
+  display:grid;place-items:center;padding:32px 20px;
+}
+.wrap{width:100%;max-width:428px}
+
+.card{
+  position:relative;
+  background:rgba(8,16,17,.74);
+  backdrop-filter:blur(28px) saturate(140%);
+  -webkit-backdrop-filter:blur(28px) saturate(140%);
+  border:1px solid rgba(60,125,125,.26);
+  border-radius:22px;
+  padding:40px 36px 30px;
+  box-shadow:0 30px 90px -20px rgba(0,0,0,.9),0 0 0 1px rgba(255,255,255,.02) inset;
+  opacity:0;transform:translateY(24px) scale(.97);
+  animation:cardIn 1s var(--ease-expo) .15s forwards;
+}
+.card::before{
+  content:"";position:absolute;inset:0 0 auto;height:1px;border-radius:22px 22px 0 0;
+  background:linear-gradient(90deg,transparent,rgba(111,179,179,.5),transparent);
+}
+@keyframes cardIn{to{opacity:1;transform:none}}
+
+.head{margin-bottom:26px}
+.head h1{font-size:19px;font-weight:600;letter-spacing:-.01em;margin-bottom:6px}
+.head p{font-size:13.5px;color:var(--muted);line-height:1.5}
+
+.field{margin-bottom:17px}
+.field label{display:block;font-size:11.5px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.inputwrap{position:relative}
+.inputwrap input{
+  width:100%;padding:13px 15px;font-size:14.5px;font-family:inherit;color:var(--light);
+  background:rgba(4,10,11,.75);border:1px solid rgba(60,125,125,.24);border-radius:11px;
+  transition:border-color .25s,background .25s,box-shadow .25s;
+}
+.inputwrap input::placeholder{color:#4E6363}
+.inputwrap input:focus{
+  outline:none;border-color:rgba(111,179,179,.6);background:rgba(6,14,15,.9);
+  box-shadow:0 0 0 4px rgba(60,125,125,.12);
+}
+.inputwrap::after{
+  content:"";position:absolute;left:14px;right:14px;bottom:0;height:1.5px;border-radius:2px;
+  background:linear-gradient(90deg,var(--teal-bright),var(--amber));
+  transform:scaleX(0);transform-origin:left;transition:transform .5s var(--ease-expo);
+}
+.inputwrap:focus-within::after{transform:scaleX(1)}
+.peek{
+  position:absolute;right:6px;top:50%;transform:translateY(-50%);
+  background:none;border:0;color:var(--muted);cursor:pointer;padding:8px 10px;border-radius:8px;
+  font-size:11px;font-weight:500;letter-spacing:.05em;transition:color .2s,font-weight .2s,text-shadow .2s;
+}
+/* SHOW / HIDE is plain text that POPS on hover, not a colour swap.
+   
+   The source turned it teal (01 added a teal pill behind it too), which read as
+   "this is a link to somewhere" and, being a mid-tone on a dark ground, was
+   actually dimmer than the label it replaced — the owner's note was that
+   hovering it made the text harder to see, not easier. Hover now goes to full
+   brightness and bold with a soft glow: the same control, just asserting
+   itself. No background, so it stays text. */
+.peek:hover{color:var(--light);font-weight:700;text-shadow:0 0 12px rgba(234,247,245,.3)}
+
+.row{display:flex;align-items:center;justify-content:space-between;margin:20px 0 22px}
+.check{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--muted);cursor:pointer;user-select:none}
+.check input{appearance:none;width:16px;height:16px;border:1px solid rgba(60,125,125,.45);border-radius:5px;background:rgba(4,10,11,.8);cursor:pointer;position:relative;transition:.2s}
+.check input:checked{background:var(--teal);border-color:var(--teal)}
+.check input:checked::after{content:"";position:absolute;left:5px;top:1.5px;width:4px;height:8px;border:solid var(--light);border-width:0 2px 2px 0;transform:rotate(45deg)}
+.link{font-size:13px;color:var(--teal-bright);text-decoration:none;transition:color .2s}
+.link:hover{color:var(--amber)}
+
+.btn{
+  position:relative;width:100%;padding:14px;border:0;border-radius:11px;cursor:pointer;
+  background:var(--amber);color:#160C05;font-family:inherit;font-size:14.5px;font-weight:600;letter-spacing:.01em;
+  display:flex;align-items:center;justify-content:center;gap:10px;overflow:hidden;
+  transition:transform .2s var(--ease-expo),box-shadow .3s,filter .2s;
+}
+.btn:hover{transform:translateY(-2px);filter:brightness(1.07);box-shadow:0 12px 32px -10px rgba(240,151,91,.6)}
+.btn:active{transform:translateY(0) scale(.994)}
+.btn:disabled{cursor:default;transform:none;filter:none}
+.btn .sheen{position:absolute;inset:0;background:linear-gradient(105deg,transparent 35%,rgba(255,255,255,.4) 50%,transparent 65%);transform:translateX(-120%)}
+.btn:hover .sheen{animation:sheen 1s var(--ease-smooth)}
+@keyframes sheen{to{transform:translateX(120%)}}
+.spinner{width:15px;height:15px;border:2px solid rgba(22,12,5,.25);border-top-color:#160C05;border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.sep{display:flex;align-items:center;gap:14px;margin:26px 0 18px}
+.sep::before,.sep::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,transparent,rgba(60,125,125,.3),transparent)}
+.sep span{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#587070}
+
+.sso{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.sso button{
+  padding:11px 10px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:500;
+  background:rgba(8,18,19,.7);border:1px solid rgba(60,125,125,.22);color:#B9CFCF;
+  display:flex;align-items:center;justify-content:center;gap:8px;
+  transition:border-color .25s,color .25s,transform .25s var(--ease-expo),background .25s;
+}
+.sso button:hover{border-color:rgba(111,179,179,.55);color:var(--light);background:rgba(16,32,33,.8);transform:translateY(-2px)}
+.sso .wide{grid-column:span 2}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--teal-bright)}
+
+.cardfoot{margin-top:24px;padding-top:18px;border-top:1px solid rgba(60,125,125,.14);display:flex;justify-content:space-between;align-items:center}
+.cardfoot span{font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#4E6363;letter-spacing:.04em}
+
+.legal{text-align:center;margin-top:22px;font-size:12px;color:#6F8A8A;line-height:1.6;opacity:0;animation:cardIn .9s var(--ease-expo) .5s forwards}
+.legal a{color:#7E9494;text-decoration:none}
+.legal a:hover{color:var(--teal-bright)}
+
+/* Back in the design's own top-left corner. It moved right while a lockup
+   occupied that corner; the owner has since removed the lockup from all three
+   screens, so the reason is gone. */
+.tag{position:fixed;left:22px;top:20px;z-index:5;font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.14em;color:#6F8A8A;text-transform:uppercase}
+
+.msg{
+  margin-bottom:16px;padding:11px 14px;border-radius:10px;font-size:13px;
+  background:rgba(226,88,91,.09);border:1px solid rgba(226,88,91,.32);color:#F2A3A5;
+  display:none;
+}
+/* No shake. The error is a message, not an event to dramatise — and the owner
+   asked for a normal login screen. */
+.msg.show{display:block}
+
+/* REMOVED WITH THE STAGED SUBMIT (see the screen's onSubmit): the `.done` "Fleet connected" overlay, its drawn tick and `@keyframes draw`. The
+   sequence they belonged to reported progress and then success on a timer,
+   independently of the request — offline it announced a sign-in that had not
+   happened. */
+
+@media (max-width:480px){.card{padding:32px 24px 24px}.sso{grid-template-columns:1fr}.sso .wide{grid-column:span 1}}
+@media (prefers-reduced-motion:reduce){
+  .root, .root *{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+}

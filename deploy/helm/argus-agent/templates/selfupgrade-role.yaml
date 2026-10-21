@@ -1,0 +1,38 @@
+{{- if not (include "argus-agent.skip" .) }}
+{{- if and .Values.selfUpgrade.enabled .Values.remediate.enabled }}
+# PROJECT.md AD10: lets the hub move this agent onto the image it was released
+# with. The remediate identity (never the read-only one) may get and patch
+# exactly the two agent Deployments, by name, in this namespace — nothing
+# else. The admission policy on that identity already limits a Deployment
+# change to the container image, and the agent itself refuses an image from
+# any repository but this chart's own `image.repository`.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: argus-agent-self-upgrade
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["argus-agent", "argus-agent-remediate"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: argus-agent-self-upgrade
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.remediate.serviceAccount.name }}
+    namespace: {{ .Values.namespace.name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: argus-agent-self-upgrade
+{{- end }}
+{{- end }}

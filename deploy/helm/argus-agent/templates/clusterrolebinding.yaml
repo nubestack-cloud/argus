@@ -1,0 +1,60 @@
+{{- if not (include "argus-agent.skip" .) }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: argus-investigate
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Values.namespace.name }}
+roleRef:
+  kind: ClusterRole
+  name: argus-investigate
+  apiGroup: rbac.authorization.k8s.io
+{{- if .Values.remediate.enabled }}
+---
+{{- if .Values.remediate.allNamespaces }}
+# Binds argus-remediate's own write-scoped ClusterRole to the
+# argus-remediate ServiceAccount.
+#
+# Guarded on allNamespaces: with remediate.namespaces set instead, the write
+# grant is a Role + RoleBinding per namespace (templates/remediate-role.yaml)
+# and this cluster-wide binding must NOT exist — leaving it would make the
+# namespace list decorative while granting everything, which is worse than
+# having no namespace option at all.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: argus-remediate
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.remediate.serviceAccount.name }}
+    namespace: {{ .Values.namespace.name }}
+roleRef:
+  kind: ClusterRole
+  name: argus-remediate
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+# PROJECT.md E11: the `argus-remediate-investigate` ClusterRoleBinding that
+# used to live here is GONE, deliberately and permanently.
+#
+# It bound argus-investigate's read-only ClusterRole onto the argus-remediate
+# ServiceAccount, because this chart ran ONE agent process under ONE identity
+# and that process had to be able to both read and write. The cost was the
+# defect E11 exists to close: with remediation enabled, the model's read-only
+# tool loop ran under an identity that could also write, and the only thing
+# stopping it was that the hub never offered it a write tool. Non-negotiable 1
+# asks for RBAC-incapable, not un-asked.
+#
+# The two identities are now two Deployments on two tunnel connections
+# (templates/deployment.yaml and templates/remediate-deployment.yaml), so
+# neither needs the other's grant: the investigation agent holds
+# argus-investigate and nothing else, and the remediation agent holds
+# argus-remediate and nothing else. Do not re-add a binding that gives either
+# one the other's role — that single line is the whole defect.
+{{- end }}
+{{- end }}

@@ -1,0 +1,115 @@
+{{- if include "argus-hub.cliRunnerEnabled" . }}
+{{- $fullname := include "argus-hub.fullname" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-cli-runner
+  labels: {{- include "argus-hub.labels" . | nindent 4 }}
+spec:
+  # ClusterIP only, never exposed: only the hub calls it, over the cluster
+  # network.
+  type: ClusterIP
+  ports:
+    - name: runner
+      port: 8090
+      targetPort: runner
+  selector:
+    {{- include "argus-hub.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: cli-runner
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-cli-runner
+  labels: {{- include "argus-hub.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "argus-hub.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: cli-runner
+  template:
+    metadata:
+      labels:
+        {{- include "argus-hub.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: cli-runner
+    spec:
+      # A separate pod from the hub, on purpose and not for scaling: this
+      # container carries a Node runtime and a third-party CLI, and the hub pod
+      # holds the Postgres credential, the agent mTLS material and the
+      # plan-signing key — none of which a Node dependency tree has any business
+      # sitting next to (lld/12 §12.1). It is the one image in the repo that is
+      # deliberately not distroless.
+      #
+      # It holds NO database credential, NO tunnel identity and NO signing key,
+      # and it never learns which cluster it is investigating: cluster scope
+      # lives inside a short-lived token the hub mints per investigation.
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        # Numeric, and it has to be: the image's Dockerfile says `USER
+        # node:node` by NAME, and kubelet cannot prove a named user is non-root,
+        # so with runAsNonRoot alone every pod failed CreateContainerConfigError
+        # ("image has non-numeric user (node), cannot verify user is non-root")
+        # — found on a real install, 2026-09-29. 1000:1000 is `node` in the
+        # official node:22-trixie-slim base; change both if that base changes.
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: cli-runner
+          image: {{ include "argus-hub.cliRunnerImage" . | quote }}
+          imagePullPolicy: {{ .Values.cliRunner.image.pullPolicy }}
+          ports:
+            - name: runner
+              containerPort: 8090
+          env:
+            - name: ARGUS_CLI_RUNNER_ADDR
+              value: ":8090"
+            - name: ARGUS_CLI_RUNNER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.cliRunner.existingSecret | default (printf "%s-cli-runner" $fullname) }}
+                  key: {{ .Values.cliRunner.tokenKey }}
+            # Bounded worker pool: each in-flight investigation is a real CLI
+            # process with a real memory footprint, so raising this without also
+            # raising the memory limit below converts a capacity problem into an
+            # OOMKill (lld/12 §12.5).
+            - name: ARGUS_CLI_MAX_IN_FLIGHT
+              value: {{ .Values.cliRunner.maxInFlight | quote }}
+            - name: ARGUS_CLI_QUEUE_DEPTH
+              value: {{ .Values.cliRunner.queueDepth | quote }}
+            {{- with .Values.cliRunner.authMode }}
+            # Declares how the credential is BILLED, not how it authenticates —
+            # it is what lets a zero cost be reported as "not measured" rather
+            # than a fabricated $0.00 (lld/07 §10.5).
+            - name: ARGUS_CLI_AUTH_MODE
+              value: {{ . | quote }}
+            {{- end }}
+          envFrom:
+            # The operator's model credential. ARGUS never ships one.
+            - secretRef:
+                name: {{ .Values.cliRunner.modelCredential.existingSecret | default (printf "%s-model-credential" $fullname) }}
+          resources: {{- toYaml .Values.cliRunner.resources | nindent 12 }}
+          volumeMounts:
+            - name: workspace
+              mountPath: /tmp
+      volumes:
+        # tmpfs-backed scratch, sized so a runaway CLI cannot fill a node's disk.
+        - name: workspace
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi
+{{- end }}

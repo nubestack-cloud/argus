@@ -1,0 +1,59 @@
+-- remediation_approval_decisions.analysis_id — the analysis an approval or
+-- rejection was a judgement OF.
+--
+-- PROJECT.md L8. Operator verdicts and their reasons already accumulate in this
+-- table, and nothing on the row says what the operator was actually judging. A
+-- rejection reading "scaling replicas does not fix a per-pod OOM" is a verdict
+-- on one specific analysis: one root cause statement, produced by one prompt
+-- version, by one model, from one set of evidence, offering one action type out
+-- of whatever internal/resolution permitted that day. Every one of those moves.
+-- By the time anything reads this feedback back — PROJECT.md L1's knowledge base
+-- is the reader it is being kept for — the prompt and the action set the verdict
+-- was passed on will have changed, and an unanchored verdict is indistinguishable
+-- from a verdict on today's behaviour. This column is the anchor, and deliberately
+-- the cheapest one available: no new table, no new write path, one nullable
+-- column on a row the three existing decision writers already insert.
+--
+-- WHY A FOREIGN KEY RATHER THAN COPIES OF prompt_version/model. analyses rows are
+-- written once and never updated (internal/api/analyze.go's persistAnalysis is the
+-- only writer; no UPDATE analyses exists anywhere in the tree), and they already
+-- carry prompt_version and model — migration 000005, columns 33-34. So the join is
+-- sufficient, and copying those two values onto this row would create a second
+-- source of truth for a fact that cannot drift, with the usual consequence that
+-- the two disagree and nobody can say which is right. The id also reaches far more
+-- than those two columns: root_cause, confidence, iterations, triggered_by, the
+-- evidence rows, the analysis_embeddings row, and the recommendation the model
+-- actually proposed all hang off it. Nothing is denormalised here.
+--
+-- NULLABLE, AND DELIBERATELY NOT BACKFILLED — and the reason is not that the old
+-- value is unknowable. It is knowable exactly: every existing decision row has a
+-- NOT NULL recommendation_id, remediation_recommendations.analysis_id is itself
+-- NOT NULL, and nothing ever updates it, so the pre-existing rows could be filled
+-- in by the identical rule the new write path uses. They are left NULL anyway, so
+-- that the column means one thing and not two: a non-NULL analysis_id is a pin
+-- taken at the moment of the decision, and NULL is "this decision predates L8".
+-- A backfill would make those two states indistinguishable forever, and the point
+-- of the column is to be trustworthy about provenance rather than to be full.
+-- Readers render an absent analysis as absent — never as a default, and never as
+-- the incident's newest analysis, which is a different claim (see
+-- internal/api/approvals.go's decisionAnalysisSubquery for why).
+--
+-- RLS: nothing to add. This is a column on an existing table, and 000027's
+-- ENABLE / FORCE ROW LEVEL SECURITY, the remediation_approval_decisions_tenant_scope
+-- policy, 000035's restrictive cluster-scope policy and the GRANT to argus_app all
+-- already cover every column of the row, present and future. Postgres referential
+-- integrity checks bypass row security by design, so the FK resolves against
+-- analyses (also FORCE'd) from an argus_app session without needing a grant of its
+-- own — the same way evidence.analysis_id and analysis_embeddings.analysis_id
+-- already do.
+ALTER TABLE remediation_approval_decisions
+  ADD COLUMN analysis_id text REFERENCES analyses(id);
+
+-- No index, matching evidence.analysis_id's own precedent (migration 000005, an
+-- unindexed NOT NULL FK to the same table). This column is never a lookup key:
+-- decisions are read by recommendation_id or by incident_id, both already indexed,
+-- and the L1 direction of travel is analyses -> decision, which resolves through
+-- analyses(id)'s primary key. The one cost of leaving it unindexed is that
+-- deleting an analysis seq-scans this table to check the constraint; the only
+-- deleter of analyses rows is clearDemoData (internal/api/demo_data.go), which
+-- already deletes the decision rows first and runs against a handful of rows.

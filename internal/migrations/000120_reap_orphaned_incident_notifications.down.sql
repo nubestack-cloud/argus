@@ -1,0 +1,17 @@
+-- Deliberately empty, and empty for the same reason 000107's and 000092's own
+-- down files are: this migration changes no schema at all. It is a data
+-- correction, and the rows it removed were queued notifications for incidents
+-- that no longer exist — undoing it would mean re-inserting rows this
+-- migration proved are undeliverable, which is not a rollback, it is
+-- re-creating the defect.
+--
+-- A rollback of 000120 therefore leaves the schema exactly as 000119 left it,
+-- which is the property `migrate down` has to preserve. Nothing after this
+-- point depends on those rows being present; internal/notify's
+-- reapOrphanedTransitions would delete them again on the next 30-second tick
+-- regardless of what this file did.
+--
+-- SELECT rather than a bare comment so the file is a valid, non-empty
+-- statement for golang-migrate and cannot be mistaken for a truncated or
+-- half-written migration.
+SELECT 1;

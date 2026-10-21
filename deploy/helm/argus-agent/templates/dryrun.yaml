@@ -1,0 +1,232 @@
+{{- if not (include "argus-agent.skip" .) }}
+{{- if .Values.dryRun.enabled }}
+# argus-dryrun — BACKLOG.md C4's dry_run_patch half (lld/04-rbac-profiles.md
+# §5, ADR-14 in lld/14-adrs.md, decided and accepted; this chart previously
+# said plainly that neither the ServiceAccount nor the tool existed yet —
+# both now do).
+#
+# WHAT THIS IS FOR
+#
+# dry_run_patch is an INVESTIGATION-time tool the model calls mid-analysis to
+# test a hypothesis — "would setting this field to X actually fix it?" —
+# before any plan is authored and before any human has approved anything.
+# That is a genuinely different thing from F12's dry-run GATE
+# (internal/api/remediation_exec.go's attestByDryRun), which rehearses a plan
+# that is ALREADY fully authored and narrowed through the signed-plan path,
+# using argus-remediate's EXISTING patch grant — F12 needed no new RBAC.
+# dry_run_patch proposes an arbitrary exploratory patch, potentially against
+# resources or fields argus-remediate holds no grant on at all, which is why
+# it needs its own identity with its own write verbs.
+#
+# WHY A SEPARATE SERVICEACCOUNT, RATHER THAN FOLDING INTO argus-remediate OR
+# argus-investigate
+#
+# The one thing that makes a write-capable identity safe here is the
+# ValidatingAdmissionPolicy below, which restricts THIS identity, and only
+# this identity, to dryRun=All requests. RBAC grants are additive: a subject
+# bound to two ClusterRoles holds the union of both. If this identity ALSO
+# held argus-remediate's real, unrestricted patch/update grant (the way this
+# chart already unions argus-investigate onto argus-remediate — see
+# values.yaml's header comment), one of two things would break the moment
+# both packs were enabled on the same cluster:
+#
+#   - if this policy's matchConditions also matched that shared identity's
+#     REAL remediation writes, scale_deployment/restart_pod/
+#     patch_resource_limits/revert_container_image would start being refused
+#     unless they too carried dryRun=All — silently breaking real
+#     remediation; or
+#   - if the policy were scoped narrowly enough to avoid that (e.g. by some
+#     other-than-identity match condition), the claim this whole ADR rests on
+#     — "this identity may only ever submit dryRun=All" — would no longer be
+#     true; it would be "...except for the requests we remembered to
+#     exclude", which is a materially weaker property than ADR-14 decided on.
+#
+# So argus-dryrun is a genuinely separate bearer credential from whatever
+# ServiceAccount this agent Deployment's own serviceAccountName resolves to
+# (argus-investigate, or argus-remediate when remediate.enabled) — mounted
+# into the SAME Pod as a second Secret volume, not routed through a second
+# tunnel connection or gateway registry (the larger, still-unbuilt piece of
+# infrastructure values.yaml's header comment flags as out of scope for the
+# investigate/remediate union). dry_run_patch is dispatched over the exact
+# same ToolRequest/ToolResult channel every other investigation tool uses;
+# only the credential the agent's Go code uses for this one API call differs.
+# See internal/agent/dryrun_client.go's package doc comment for the
+# implementation side of this.
+#
+# WHY A MANUALLY-CREATED SECRET, NOT A PROJECTED serviceAccountToken VOLUME
+#
+# Kubernetes' projected serviceAccountToken volume source only ever mints a
+# token for the POD'S OWN spec.serviceAccountName — there is no way to
+# request a token for a different ServiceAccount from inside a pod spec. A
+# Secret of type kubernetes.io/service-account-token, annotated with
+# kubernetes.io/service-account.name, is the documented, still-supported
+# mechanism for a long-lived token belonging to a DIFFERENT identity, and
+# Secret volumes carry no restriction on which pod may mount them — so this
+# is mounted into the agent's own Pod as an ordinary second Secret volume
+# (templates/deployment.yaml), never as this Pod's own default-mounted
+# credential.
+#
+# RESOURCE SET
+#
+# Matches lld/04-rbac-profiles.md §5's own illustrative ClusterRole exactly:
+# an explicit, reviewed, enumerated list — deployments, statefulsets,
+# configmaps, persistentvolumeclaims — never a blanket */*. Wider than
+# argus-remediate's own real-write grant (which today covers only
+# deployments/statefulsets, per templates/clusterrole.yaml's
+# workload-recovery pack) is an intentional, stated trade-off: this tool's
+# entire safety property is that dryRun=All means nothing is ever actually
+# persisted, so it is reasonable to let the model explore hypotheses against
+# a broader surface than a human has approved for real execution — provided
+# that surface is still a fixed, reviewed list rather than "everything", and
+# provided the admission policy below actually holds. `create` is granted
+# alongside `get`/`patch`/`update` (unlike argus-remediate, which never
+# creates) for the same reason: a dry-run CREATE is exactly as harmless as a
+# dry-run UPDATE, and forecloses nothing a real investigation might
+# reasonably want to test ("would creating a ConfigMap with these keys
+# actually satisfy this Deployment's envFrom reference?").
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.dryRun.serviceAccount.name }}
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+---
+# The long-lived token Secret. The token-controller (still present and
+# supported on every Kubernetes version this chart targets, per
+# lld/04-rbac-profiles.md's own floor) populates `token` and `ca.crt` once
+# this Secret exists with this exact annotation — there is nothing else to
+# configure. internal/agent/dryrun_client.go reads both keys from
+# values.yaml's dryRun.tokenMountPath once mounted below.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Values.dryRun.serviceAccount.name }}-token
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/service-account.name: {{ .Values.dryRun.serviceAccount.name }}
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Values.dryRun.serviceAccount.name }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: [deployments, statefulsets]
+    verbs: [get, patch, update, create]
+  - apiGroups: [""]
+    resources: [configmaps, persistentvolumeclaims]
+    verbs: [get, patch, update, create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Values.dryRun.serviceAccount.name }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.dryRun.serviceAccount.name }}
+    namespace: {{ .Values.namespace.name }}
+roleRef:
+  kind: ClusterRole
+  name: {{ .Values.dryRun.serviceAccount.name }}
+  apiGroup: rbac.authorization.k8s.io
+---
+# THE control. Every write verb granted above is meaningless without this:
+# it is what turns "this identity CAN patch a Deployment" into "this identity
+# can only ever REHEARSE patching a Deployment" — matching
+# lld/04-rbac-profiles.md §5's own framing of dry_run_patch as "the one
+# 'read-ish' tool that genuinely needs write verbs, restricted to dryRun=All
+# by admission policy".
+#
+# CEL SEMANTICS, reasoned through rather than eyeballed, since this is the
+# one part of this whole feature that most needs to actually hold:
+#
+#   - matchConstraints.operations is [CREATE, UPDATE] and resourceRules names
+#     exactly the four resource types the ClusterRole above grants. A
+#     request for any OTHER resource type, or a DELETE/CONNECT on these four,
+#     never reaches this policy's validations at all — but that is fine: the
+#     ClusterRole above grants no delete verb on anything, and no verb at
+#     all on any resource outside this list, so RBAC itself already refuses
+#     every such request before admission is ever consulted. This policy's
+#     only job is the CREATE/UPDATE surface RBAC does grant.
+#   - matchConditions' `request.userInfo.username == '...argus-dryrun'`
+#     scopes this policy to EXACTLY this one identity — not a general
+#     dry-run-for-everyone policy (which would be both weaker, in that it
+#     says nothing about who must use dryRun, and would incorrectly
+#     constrain other identities, like argus-remediate, that have every
+#     right to submit a real write). Mirrors
+#     templates/validatingadmissionpolicy.yaml's own
+#     only-argus-remediate matchConditions idiom exactly.
+#   - The validation itself, `request.dryRun == true`, is evaluated against
+#     the ADMISSION REQUEST's own dryRun flag — not against anything in the
+#     object being written, and not against anything this Go code claims.
+#     `request.dryRun` is populated by the API server itself from whichever
+#     query parameter the CALLING CLIENT actually sent (?dryRun=All), before
+#     CEL ever runs. There is no field on the submitted object, no header,
+#     and no other client-supplied value this expression reads — the ONLY
+#     way to make it evaluate true is to submit a request the API server
+#     itself recognizes as a real dry run, which is a property of the HTTP
+#     request itself, enforced by API machinery entirely outside this
+#     policy's or this agent's control. A client cannot forge
+#     request.dryRun=true while actually persisting a write: dryRun=All is
+#     handled by every registered admission plugin and the storage layer
+#     itself refusing to persist, not by this policy pretending a real write
+#     was a rehearsal.
+#   - failurePolicy: Fail means a request this policy CANNOT evaluate (e.g.
+#     the policy object itself failed to install) is denied, not silently
+#     admitted — the same fail-closed posture
+#     templates/validatingadmissionpolicy.yaml already documents and relies
+#     on for argus-remediate's field restriction.
+#
+# NOT verified against a real API server in this round — no live cluster is
+# available in this environment (see this feature's own test file,
+# internal/agent/dry_run_patch_test.go, and this chart's helm
+# lint/template verification, for what WAS checked: that the policy object
+# is syntactically valid YAML/CEL and renders with dryRun.enabled true and
+# false). Unlike templates/validatingadmissionpolicy.yaml's field-restriction
+# policies, this one's only construct is a single scalar comparison against a
+# well-known, API-server-populated boolean — there is no schema-typed
+# projection, no has()-guarding, and no field path to get wrong — so the risk
+# a real API server rejects or misevaluates this expression is materially
+# lower than that file's own CEL. Still: "low risk" is not "verified", and
+# this file's own convention (established there) is to say which one is true
+# rather than let a confident-sounding comment stand in for it.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ .Values.dryRun.serviceAccount.name }}-enforce-dryrun
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["apps", ""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: [deployments, statefulsets, configmaps, persistentvolumeclaims]
+  matchConditions:
+    - name: only-argus-dryrun
+      expression: "request.userInfo.username == 'system:serviceaccount:{{ .Values.namespace.name }}:{{ .Values.dryRun.serviceAccount.name }}'"
+  validations:
+    - expression: "request.dryRun == true"
+      message: "argus-dryrun may only submit dryRun=All requests — this identity's write grant exists solely to rehearse a change, never to make one"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ .Values.dryRun.serviceAccount.name }}-enforce-dryrun
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  policyName: {{ .Values.dryRun.serviceAccount.name }}-enforce-dryrun
+  validationActions: ["Deny"]
+{{- end }}
+{{- end }}

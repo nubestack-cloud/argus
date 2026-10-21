@@ -1,0 +1,24 @@
+Can you list as many k8s issue types as can happen in a running environment with different resources pods, services, endpoints, deployments, secrets, volumes/pv//pvc, storage classes, configmaps, ingress, gateway api and routes, networking etc so that i can train my product to be able to solve as much as possible, you can group them by object type or catagory. it should be a comprehensive list and not half baked. so think deeply
+
+Thought process
+How should each issue entry be structured? (Affects how directly usable this is for training detectors vs. for reading.)
+Full detector schema (Recommended)
+Do you want a machine-readable companion file alongside the markdown?
+Yes — YAML catalogue (Recommended)
+Updated tasks, ran 14 commands, created a file · 2 notes
+
+1,032 entries across 45 categories, plus a YAML companion with the same records as structured data (validated: parses, no duplicate IDs, every entry has risk/channel/autonomy resolved).
+
+Each entry carries a stable ID, machine-readable signals (event reason, condition, phase, exit code), ranked root causes, the typical fix and which channel delivers it, a risk floor, and an autonomy rating.
+
+Four decisions in how I built it that matter for training:
+
+Entries are failure modes, not symptoms. CrashLoopBackOff isn't one entry — it's ~20, because that's the granularity at which remediation differs. A product that detects CrashLoopBackOff is trivial; one that distinguishes which cause is the product.
+
+455 entries (44%) are marked ⟳ — no Kubernetes event ever fires. Readiness that never passes, a PDB protecting nothing, a NetworkPolicy the CNI doesn't enforce, a ServiceMonitor matching no targets, a cert 20 days from expiry, a backup that "succeeds" while excluding the data. These are only findable by the steady-state sweep, and they're your differentiator — Tier 2 in Appendix 3 lists them explicitly. They're also the ones that make a user say "I didn't know that was broken."
+
+Only 154 entries (15%) are auto-remediation candidates. 204 are never-automatic. If the ratio came out much higher than this I'd have been kidding you.
+
+Three appendices are the transferable part. Appendix 1 is cross-cutting detection patterns — time-to-failure signature, blast-radius classification, fighting-controller detection, fix-futility checking — which generalise to failure modes not in the list. Appendix 2 is the raw signal vocabulary (event reasons, condition types, exit codes, and the computed predicates that have no event). Appendix 3 is a build order: Tier 1 is ~35 entries covering the bulk of real incidents.
+
+Two caveats worth stating plainly. Categories AK–AS (Windows, batch/gang scheduling, 1.30+ features, cloud limits, eBPF, multi-tenancy, DR, runtime security, operator error) were added as a gap-fill pass and haven't had the same review as A–AJ — treat their specifics as slightly less settled. And the adversarial fact-check I was running against the whole catalogue got cut off partway by a spend limit, so a handful of version-specific numbers (CSI attach limits, some kubelet defaults) are from my own knowledge rather than verified against current docs. Worth a pass before you encode them as thresholds.

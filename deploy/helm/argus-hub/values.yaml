@@ -1,0 +1,381 @@
+# ARGUS hub chart values.
+#
+# An install needs one value, ingress.host. Everything else has a working
+# default: bundled Postgres with daily backups, generated credentials, and
+# agents tunnelling through the same Ingress as the UI. The hub runs as one
+# binary, so there are no per-component replica counts to tune.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: nubestack/argus-hub
+  # The release tag, for reading. `digest` is what is pulled when set.
+  tag: "0.2.0"
+  # The release's image digest. A tag can be moved (by mistake, or by a
+  # compromised publishing credential); a digest cannot, so a chart version
+  # always installs the same image. Clear it to pull by `tag`, for example a
+  # locally built image, and set pullPolicy to Always if the tag moves.
+  digest: "sha256:2ae8254559b4df8091a6715b528efee1094ff7b69a1645de73b6cbe10df94d76"
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Must be 1: the hub holds every agent's tunnel in memory, and a second
+# replica would make agents flap between pods. The chart refuses other values.
+replicaCount: 1
+
+serviceAccount:
+  create: true
+  name: ""
+
+# --- Where agents reach the hub -------------------------------------------
+# The URL agents use to enroll and, unless tunnel.publicEndpoint is set, to
+# tunnel. Leave it empty: it is https://<ingress.host> (http without TLS), or
+# the hub's in-cluster Service when there is no ingress host. Set it only when
+# agents reach the hub by a different URL than the Ingress, for example
+# through another load balancer.
+publicApiUrl: ""
+
+# The agent chart the UI's enroll command installs. A release stamps `version`
+# with the agent chart released alongside this hub chart, so a hub and the
+# agents it enrolls always come from the same release.
+agentChart:
+  ref: oci://registry-1.docker.io/nubestack/argus-agent-chart
+  version: ""
+
+# The agent image released with this hub, by digest
+# (repository@sha256:...). A cluster whose agent chart enables selfUpgrade gets
+# an "Upgrade agent" action on its Agent tab when it runs anything else. Empty
+# means the hub offers no upgrade and the tab keeps showing the helm command.
+agentImage: "nubestack/argus-agent@sha256:71bcfca326d62550a7a379316e372589c1053ae606c8584baa8e8a1dc82fe895"
+
+# This cluster's own agent, installed with the hub and enrolled and accepted
+# automatically, so the hub watches the cluster it runs in from the start. It
+# reaches the hub at its in-cluster Service. Every value of the agent chart can
+# be set here (for example localAgent.remediate.enabled). It needs the hub in
+# argus-system, and it is skipped when this cluster already runs an agent
+# installed some other way. false: enroll this cluster from the UI instead.
+localAgent:
+  enabled: true
+  embedded: true
+  # The cluster's name in ARGUS; rename it on the hub at any time.
+  displayName: local
+  namespace:
+    create: false
+  enrollment:
+    tokenSecretRef:
+      name: argus-local-enrollment
+      key: token
+
+# The agent tunnel. By default it needs nothing: agents open a WebSocket at
+# publicApiUrl, through the same Ingress as the UI, and run their mTLS session
+# inside it. Everything below is for a DEDICATED tunnel path instead, which
+# only a network that blocks WebSockets through its Ingress needs.
+tunnel:
+  # A dedicated host:port agents dial, e.g. "argus-tunnel.example.com:8443",
+  # exposed by tunnel.service (LoadBalancer or NodePort) or tunnel.ingress.
+  # Empty: tunnel through the Ingress.
+  publicEndpoint: ""
+  # Extra SANs for the tunnel certificate. publicEndpoint's host is added
+  # automatically; add anything else agents might use.
+  extraSANs: []
+  service:
+    # ClusterIP is the safe default but is NOT reachable from other clusters.
+    # Use LoadBalancer (cloud), or NodePort where you control the node address.
+    type: ClusterIP
+    port: 8443
+    nodePort: ""
+    # With type LoadBalancer, ask for this address, so publicEndpoint can name
+    # it in the same install instead of waiting to learn what was assigned.
+    # Honoured by MetalLB, kube-vip and most clouds (some prefer their own
+    # annotation in annotations below; a cloud may need the IP reserved first).
+    loadBalancerIP: ""
+    annotations: {}
+  # For networks where the watched clusters can reach this cluster ONLY
+  # through its ingress on 443 — no LoadBalancer, and no firewall path to a
+  # NodePort. Renders an Ingress that asks ingress-nginx to forward the
+  # tunnel's raw TLS by SNI without decrypting it, so mTLS stays end to end.
+  # Needs ingress-nginx running with --enable-ssl-passthrough (a cluster-wide
+  # controller flag: every 443 connection is then SNI-peeked by the
+  # controller first). Set publicEndpoint to "<host>:443". Prefer a dedicated
+  # LoadBalancer or NodePort where the network allows one — this ties every
+  # agent's tunnel to a shared ingress, so an ingress restart drops them all
+  # until they reconnect.
+  ingress:
+    enabled: false
+    className: ""
+    host: ""
+    annotations: {}
+
+api:
+  service:
+    type: ClusterIP
+    port: 8080
+    # With type NodePort, pin the port (30000-32767) so publicApiUrl can name it
+    # in the same install. Empty lets Kubernetes choose one.
+    nodePort: ""
+    annotations: {}
+    # GET /metrics is served on this same Service and port. true adds the
+    # prometheus.io/scrape, /port and /path annotations that annotation-based
+    # Prometheus discovery reads. They say where to scrape, not how to
+    # authenticate: the scrape job still needs api.metricsToken as a bearer
+    # token (docs/METRICS.md has the scrape_config).
+    metricsScrapeAnnotations: true
+  # GET /metrics always requires a bearer token: it exposes fleet size,
+  # incident volume and AI spend (never a cluster name). Leave this empty and
+  # the chart generates one, kept across upgrades. Read it back with:
+  #
+  #   kubectl -n argus-system get secret argus-hub-metrics \
+  #     -o jsonpath='{.data.token}' | base64 -d ; echo
+  #
+  # (the Secret is <fullname>-metrics). Or set your own value here.
+  metricsToken: ""
+  # Or name an existing Secret holding a non-empty token; the chart then
+  # creates none.
+  metricsTokenExistingSecret: ""
+  metricsTokenKey: token
+
+# The one thing an install has to say: where the hub is reached. Set
+# ingress.host and the UI, the API and the agents' tunnel are all served there
+# (the tunnel as a WebSocket, with its mTLS inside it). Leave it empty for a
+# hub reached by `kubectl port-forward`, which then watches only its own
+# cluster.
+ingress:
+  enabled: true
+  host: ""
+  # Your controller's IngressClass; empty uses the cluster's default class.
+  className: ""
+  # A cert-manager ClusterIssuer: issues the certificate and turns on HTTPS.
+  clusterIssuer: ""
+  annotations: {}
+  tls:
+    # HTTPS with a certificate you provide in the Secret below. Implied by
+    # clusterIssuer.
+    enabled: false
+    # Defaults to <fullname>-tls.
+    secretName: ""
+
+# Embeddings of past investigations, for related-analysis retrieval. Off
+# unless you point the hub at an Ollama-compatible embeddings endpoint you
+# already run (ARGUS does not install one). It receives cluster data, so use
+# only a self-hosted endpoint, never a third-party service. Retrieval into
+# investigations is a separate admin setting, analysis.retrievalEnabled.
+embeddings:
+  ollamaUrl: ""      # e.g. http://ollama.ollama.svc:11434
+  model: ""          # default bge-m3
+
+# Gateway API, instead of the Ingress: an HTTPRoute attached to a Gateway you
+# run, for the UI, the API and the agents' tunnel. Set host and parentRefs,
+# and leave ingress.host empty. The Gateway's listener holds the certificate
+# for host; it must allow WebSocket connections to stay open (agents send a
+# heartbeat every 30 seconds).
+httpRoute:
+  host: ""
+  # The Gateway to attach to, e.g. [{name: public, namespace: gateway-system}].
+  parentRefs: []
+  # Whether the Gateway serves host over HTTPS; sets the hub's own URL.
+  https: true
+  annotations: {}
+
+# --- Postgres -------------------------------------------------------------
+postgres:
+  # bundled: this chart runs a single-replica StatefulSet with a PVC.
+  # external: you supply a connection string in a Secret.
+  mode: bundled
+
+  bundled:
+    # Postgres 16 with the pgvector extension, which the schema needs (an
+    # external Postgres needs it available too). Pinned by digest. Changing it
+    # within 16.x is a minor-version upgrade; a major version needs a dump and
+    # restore.
+    image: pgvector/pgvector:0.8.6-pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+    database: argus
+    # The superuser password. Generated and stored in a Secret when empty, so a
+    # default install has no well-known credential.
+    password: ""
+    persistence:
+      enabled: true
+      # About 0.5-1 GB per busy watched cluster with the default 30-day
+      # finding retention. Choose it (and storageClass) at install: Helm cannot
+      # resize a StatefulSet's volume later (docs/INSTALL.md, "Storage").
+      size: 10Gi
+      storageClass: ""
+      # Retained on uninstall by default: a chart that deletes the only copy of
+      # a customer's incident history on `helm uninstall` is a data-loss bug
+      # waiting to happen.
+      retainOnDelete: true
+    resources:
+      requests: { cpu: 250m, memory: 512Mi }
+      limits: { memory: 2Gi }
+    # Size of Postgres's /dev/shm (memory-backed, counted against the memory
+    # limit above). The container default of 64Mi is too small for concurrent
+    # parallel queries.
+    sharedMemory: 512Mi
+
+    # A dump of the database before every `helm upgrade`, on the database's
+    # own volume (backups/), so a bad upgrade can be rolled back: migrations
+    # only move forward. Not a backup policy: it shares the database's disk.
+    # For data you must not lose, use postgres.mode=external with your
+    # database's own backups.
+    backup:
+      beforeUpgrade: true
+      # How many pre-upgrade dumps to keep (each about a tenth of the database).
+      keep: 2
+
+  external:
+    # Secret holding the two connection strings. Keys are configurable because
+    # an existing Secret rarely uses the names this chart would pick.
+    existingSecret: ""
+    urlKey: url                 # app role — what the hub runs as
+    migrateUrlKey: migrateUrl   # a role that may CREATE/ALTER, for migrations
+    # Optional key in existingSecret holding the password for the `argus_app`
+    # role. Migration 000009 creates that role NOLOGIN; when this is set, the
+    # migrate step gives it this login password on every install/upgrade (the
+    # bundled mode does the same with its own generated one). Leave empty only
+    # if you set argus_app's password yourself — `urlKey`'s connection string
+    # must use it either way, and the hub must connect as argus_app, never as
+    # a role that bypasses row-level security.
+    appPasswordKey: ""
+
+  # The hub's connection pool. Left empty, the hub uses
+  # internal/data.DefaultPoolConfig — sized for the twelve background sweepers,
+  # the eight concurrent finding handlers, the MCP listener and one
+  # transaction per authenticated HTTP request, which is what the untuned pgx
+  # default of max(4, NumCPU) could not cover.
+  #
+  # maxConns is per process. replicaCount is pinned to 1 today, so the case
+  # the default cannot know is an EXTERNAL Postgres shared with other
+  # workloads, where the server's max_connections budget is not all ARGUS's. Set these only for that, or on evidence — a rising
+  # EmptyAcquireCount from the pool's own stats (see internal/data.DB.Stat)
+  # is what "the pool is too small" actually looks like.
+  pool:
+    maxConns: ""            # e.g. 25
+    minConns: ""            # e.g. 4
+    maxConnLifetime: ""     # e.g. 30m
+    maxConnIdleTime: ""     # e.g. 5m
+    healthCheckPeriod: ""   # e.g. 30s
+
+# --- The initial admin account --------------------------------------------
+bootstrap:
+  # Leave empty and the chart generates one into a Secret; NOTES.txt tells you
+  # how to read it. Never a baked-in default: a shipped known password is the
+  # single most common way a self-hosted product is compromised.
+  password: ""
+  existingSecret: ""
+  passwordKey: password
+
+# --- AI: the CLI-agent investigator backend (optional) ---------------------
+#
+# Deployed only when there is something for it to run with. When deployed this
+# chart also runs the runner, and sets the hub's MCP listener — the piece that
+# is easy to miss, because a `cli` provider can be fully configured in Settings
+# and still fail without it.
+cliRunner:
+  # auto  (default) deploy the runner exactly when a model credential below is
+  #       supplied; an API-provider install runs no runner at all.
+  # true  always deploy it; the chart refuses to render without a credential.
+  # false never deploy it, even with a credential supplied.
+  # Upgrading never removes a runner an existing release already runs.
+  enabled: auto
+  image:
+    repository: nubestack/argus-cli-runner
+    tag: "0.2.0"
+    # Pinned by digest, like the hub image.
+    digest: "sha256:d9f4e6368afd4a14dd1970c93e4625c6c149c20c5b6a9028733a81e06c632d6a"
+    pullPolicy: IfNotPresent
+  # Shared hub<->runner secret. Generated when empty.
+  token: ""
+  existingSecret: ""
+  tokenKey: token
+  # Which coding-agent CLI runs (claude or codex) is chosen per AI provider in
+  # Settings -> AI providers, not here: the runner image carries both and the
+  # hub tells it which to use on each investigation.
+  # Your model credential. ARGUS never ships one. Supply ONE of these, or point
+  # at an existing Secret with the same keys.
+  modelCredential:
+    existingSecret: ""
+    anthropicApiKey: ""
+    claudeCodeOauthToken: ""
+    openaiApiKey: ""
+  # "subscription" declares that the credential is flat-rate billed, which is
+  # what lets a zero cost be reported as "not measured" rather than a
+  # fabricated $0.00. Leave empty for metered API billing.
+  authMode: ""
+  maxInFlight: 2
+  queueDepth: 16
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { memory: 2Gi }
+
+# --- Structured logging -----------------------------------------------------
+#
+# The hub logs one JSON object per line through log/slog, with a fixed
+# attribute set (incident_id, cluster_id, actor_id, request_id) so a single
+# investigation's trail can be isolated by field rather than by grepping
+# prose. Both values are passed straight through as environment variables.
+#
+#   level:  debug | info | warn | error
+#           info is the deployed default. debug additionally emits one line
+#           per model round trip and one per tunnel tool call, which is what
+#           a support bundle needs to reconstruct a specific investigation
+#           end to end from its requestId — turn it on for the reproduction,
+#           not permanently.
+#   format: json | text
+#           json unless a human is tailing it directly. A support bundle is
+#           only useful as json.
+logging:
+  level: info
+  format: json
+
+# --- Investigation bounds (also editable live in Settings) ----------------
+# Field-level change history agents report (docs/CLUSTER_INSIGHT_SPECS.md
+# CI-S2): rows older than this are pruned hourly.
+resourceChanges:
+  retentionDays: 14
+
+analysis:
+  maxIterations: 8
+  timeLimitSeconds: 180
+
+# The graceful-shutdown window. On SIGTERM the hub drains in
+# phases (see cmd/hub/main.go's drainHub): /readyz starts answering 503 so this
+# pod leaves its Service's endpoints, then in-flight HTTP requests are allowed
+# to finish, then live browser WebSocket feeds get a real close frame, then the
+# background sweepers stop, then the agent tunnels close.
+#
+# templates/deployment.yaml derives terminationGracePeriodSeconds from these
+# two numbers rather than hardcoding one, because a grace period SHORTER than
+# the drain means kubelet SIGKILLs the hub in the middle of it and the drain
+# was for nothing. Raise graceSeconds only alongside that derivation.
+shutdown:
+  # How long to keep serving after /readyz starts failing, so the endpoints
+  # controller (and any ingress watching it) stops routing here before the
+  # listener stops accepting. 0 is valid — it just means a handful of requests
+  # in that window arrive as connection-refused instead.
+  readinessDelaySeconds: 3
+  # Per-phase budget for the HTTP drain and for the background workers. Not
+  # tied to analysis.timeLimitSeconds: POST /incidents/{id}/analyze answers
+  # 202 and investigates in the background, and a drain cancels a running
+  # investigation (recording the interruption on its incident) rather than
+  # making a rollout wait out a full one.
+  graceSeconds: 15
+
+resources:
+  requests: { cpu: 250m, memory: 512Mi }
+  limits: { memory: 2Gi }
+
+# Scheduling and pull secrets below apply to EVERY pod this chart runs — the
+# hub, the bundled Postgres and the CLI runner — so a cluster that needs a
+# toleration or a private-registry secret gets it on all three.
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  seccompProfile: { type: RuntimeDefault }
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: { drop: ["ALL"] }
+nodeSelector: {}
+tolerations: []
+affinity: {}

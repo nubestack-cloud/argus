@@ -1,0 +1,111 @@
+{
+  "id": "catalog-run-003",
+  "description": "Runtime, crashes & resource exhaustion / Exit codes and crash patterns: Node-level OOM killing containers under limit. Catalogue entry RUN-003 (category D, rank 2 of the catalogue's categories by size, 39 entries; silent=false, risk=medium, channels=pullRequest). Selected because it filled the least-covered (risk, channel) cell medium/pullRequest. Correct answer: a statement naming one of the catalogue's candidate root causes for this signal (Overcommitted node; BestEffort neighbours).",
+  "provenance": "synthesized-from-catalog",
+  "catalogId": "RUN-003",
+  "category": "D",
+  "categoryName": "Runtime, crashes & resource exhaustion",
+  "limitation": "Synthesized from issue-catalog metadata, not from recorded cluster output: the toolResponses below present this entry's STATED signals through the real tool surface. This case grades whether the investigation maps a known signal to one of the catalogue's candidate root causes. It does not prove anything about behaviour on a real cluster, and a green score on it must not be read as cluster coverage.",
+  "finding": {
+    "detectorId": "k8s-warning-events",
+    "severity": "high",
+    "namespace": "eval-d",
+    "objectName": "run-003-37477",
+    "reason": "OOMKilled",
+    "message": "Node-level OOM killing containers under limit — OOMKilled while under limit; node MemoryPressure",
+    "occurrenceCount": 1
+  },
+  "toolResponses": {
+    "describe_resource": [
+      {
+        "data": {
+          "events": [
+            {
+              "count": 1,
+              "involvedObjectKind": "Pod",
+              "involvedObjectName": "run-003-37477",
+              "lastTimestamp": "2026-09-23T00:00:00Z",
+              "message": "OOMKilled while under limit; node MemoryPressure",
+              "namespace": "eval-d",
+              "reason": "OOMKilled",
+              "type": "Warning"
+            }
+          ],
+          "object": {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+              "name": "run-003-37477",
+              "namespace": "eval-d"
+            },
+            "status": {
+              "conditions": [
+                {
+                  "message": "OOMKilled while under limit; node MemoryPressure",
+                  "reason": "OOMKilled",
+                  "status": "False",
+                  "type": "Ready"
+                }
+              ],
+              "phase": "Pending"
+            }
+          }
+        }
+      }
+    ],
+    "get_events": [
+      {
+        "data": [
+          {
+            "count": 1,
+            "involvedObjectKind": "Pod",
+            "involvedObjectName": "run-003-37477",
+            "lastTimestamp": "2026-09-23T00:00:00Z",
+            "message": "OOMKilled while under limit; node MemoryPressure",
+            "namespace": "eval-d",
+            "reason": "OOMKilled",
+            "type": "Warning"
+          }
+        ]
+      }
+    ],
+    "get_gitops_ownership": [
+      {
+        "data": {
+          "app_ref": {
+            "name": "d-app",
+            "namespace": "argocd"
+          },
+          "managed_by": "argocd"
+        }
+      }
+    ],
+    "get_logs": [
+      {
+        "data": {
+          "lines": []
+        }
+      }
+    ],
+    "get_owner_chain": [
+      {
+        "data": []
+      }
+    ],
+    "list_resources": [
+      {
+        "data": []
+      }
+    ]
+  },
+  "expected": {
+    "type": "definite",
+    "anyOfKeywords": [
+      "besteffort",
+      "overcommitted"
+    ],
+    "minConfidence": 0.5,
+    "minIterations": 2,
+    "maxIterations": 8
+  }
+}

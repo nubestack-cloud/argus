@@ -1,0 +1,119 @@
+{
+  "id": "argocd-immutable-field-pr-fix",
+  "description": "PG9 (2026-10-13 parity review): gitopsinsight.FailureClassFieldImmutable's own cause text says the fix is to recreate the resource (delete + reapply). On the pullRequest route, DeleteResource is the one permitted typed action that reaches exactly that fix (internal/resolution.PermittedActionTypes) — Argo recreates the object from Git on its next sync once the stale one is gone. Proves the mechanism reaches a DIFFERENT action type than the namespace-fix case from the SAME two-action route, not a hardcoded per-pattern mapping.",
+  "finding": {
+    "detectorId": "k8s-sweep",
+    "severity": "high",
+    "namespace": "argocd",
+    "objectName": "checkout-api",
+    "reason": "GitOpsSyncFailed",
+    "message": "Argo CD cannot apply this Application's manifests (phase Failed, 2 retries, revision 7f8e9d0): Service.spec.clusterIP: field is immutable",
+    "occurrenceCount": 2
+  },
+  "toolResponses": {
+    "get_events": [
+      {
+        "match": {},
+        "data": [
+          {
+            "namespace": "argocd",
+            "involvedObjectKind": "Application",
+            "involvedObjectName": "checkout-api",
+            "reason": "OperationError",
+            "message": "Sync operation failed: one or more objects failed to apply, reason: Service \"checkout-api\" is invalid",
+            "type": "Warning",
+            "count": 2,
+            "lastTimestamp": "2026-10-13T10:15:00Z"
+          }
+        ]
+      }
+    ],
+    "describe_resource": [
+      {
+        "match": {},
+        "data": {
+          "object": {
+            "apiVersion": "argoproj.io/v1alpha1",
+            "kind": "Application",
+            "metadata": { "name": "checkout-api", "namespace": "argocd" },
+            "spec": {
+              "source": { "repoURL": "https://github.com/acme/platform-gitops.git", "path": "apps/checkout-api", "targetRevision": "main" },
+              "destination": { "server": "https://kubernetes.default.svc", "namespace": "payments-prod" },
+              "syncPolicy": { "automated": { "selfHeal": true } }
+            },
+            "status": {
+              "sync": { "status": "OutOfSync", "revision": "7f8e9d0a1b2c" },
+              "health": { "status": "Degraded" },
+              "operationState": {
+                "phase": "Failed",
+                "message": "one or more objects failed to apply, reason: Service.spec.clusterIP: field is immutable",
+                "retryCount": 2,
+                "syncResult": { "revision": "7f8e9d0a1b2c" }
+              }
+            }
+          },
+          "events": [],
+          "gitOpsHeadline": {
+            "headline": "The last sync failed: one or more objects failed to apply, reason: Service.spec.clusterIP: field is immutable.",
+            "causes": ["Tried to change a field Kubernetes treats as immutable. Recreate the resource (delete + reapply) or revert the change."]
+          },
+          "parsedFailure": {
+            "class": "fieldImmutable",
+            "cause": "Tried to change a field Kubernetes treats as immutable. Recreate the resource (delete + reapply) or revert the change.",
+            "affectedKind": "Service",
+            "affectedName": "checkout-api",
+            "retryCount": 2
+          }
+        }
+      },
+      {
+        "match": { "gvk": "v1/Service" },
+        "data": {
+          "object": {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {
+              "name": "checkout-api",
+              "namespace": "payments-prod",
+              "annotations": { "meta.helm.sh/release-name": "", "argocd.argoproj.io/tracking-id": "checkout-api:/Service:payments-prod/checkout-api" }
+            },
+            "spec": { "clusterIP": "10.96.14.22", "selector": { "app": "checkout-api" }, "ports": [{ "port": 443, "targetPort": 8443 }] }
+          },
+          "events": []
+        }
+      }
+    ],
+    "get_gitops_ownership": [
+      {
+        "match": {},
+        "data": {
+          "managed_by": "argocd",
+          "app_ref": { "kind": "Application", "namespace": "argocd", "name": "checkout-api" },
+          "repo_target": { "repo_url": "https://github.com/acme/platform-gitops.git", "path": "apps/checkout-api", "revision": "7f8e9d0a1b2c", "revision_pinned": true }
+        }
+      }
+    ],
+    "list_repo_files": [
+      {
+        "match": {},
+        "data": { "files": ["apps/checkout-api/service.yaml", "apps/checkout-api/deployment.yaml"] }
+      }
+    ],
+    "read_repo_file": [
+      {
+        "match": {},
+        "data": { "path": "apps/checkout-api/service.yaml", "content": "apiVersion: v1\nkind: Service\nmetadata:\n  name: checkout-api\n  namespace: payments-prod\nspec:\n  clusterIP: 10.96.14.9\n  selector:\n    app: checkout-api\n  ports:\n    - port: 443\n      targetPort: 8443\n", "totalLines": 10, "truncated": false }
+      }
+    ]
+  },
+  "expected": {
+    "type": "definite",
+    "requiredKeywords": ["immutable"],
+    "forbiddenKeywords": [],
+    "minConfidence": 0.5,
+    "minIterations": 2,
+    "maxIterations": 6,
+    "requiredRoute": "pullRequest",
+    "requiredActionType": "DeleteResource"
+  }
+}

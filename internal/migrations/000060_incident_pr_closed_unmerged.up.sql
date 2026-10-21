@@ -1,0 +1,32 @@
+-- Closes BUGS.md 82: PullRequestOutcome (internal/orchestrator/mergewatch.go)
+-- carried Merged/MergedAt/Synced with no way to tell "closed without merging"
+-- from "still open", so MergeSweeper left a rejected pull request's incident
+-- in AwaitingMerge forever. DESIGN.md §12.3: "If a PR is closed unmerged, the
+-- incident returns to awaitingAction [this build's AwaitingApproval] with the
+-- rejection reason captured as negative feedback."
+--
+-- ON INCIDENTS, same reasoning migrations 000058/000059 already give for the
+-- other pr_* columns: a pull request can open via either
+-- approveByOpeningPullRequest (an approved OpenPR recommendation) or the
+-- self-service handleOpenRepositoryChange route, which routinely runs with no
+-- remediation_recommendations row at all — the incident is the one thing both
+-- paths are guaranteed to have.
+--
+-- Not remediation_approval_decisions: that table's actor_id/unattended pair
+-- (migration 000047) already worked through exactly this "who made this
+-- decision when nobody attended it" question, and its answer — a dedicated
+-- column plus an XOR constraint, not a sentinel string standing in for a user
+-- — was for a different fact (the UNATTENDED EXECUTOR auto-approved a plan).
+-- Reusing that column here would read as "the unattended executor did
+-- something on this incident", which is false — that subsystem never touched
+-- it. And incident_feedback (migration 000053, BACKLOG L1) binds to a human's
+-- judgement of an analysis's correctness — submitted_by is NOT NULL for
+-- exactly that reason, a real person forming a verdict, which a closed PR is
+-- not. Neither table's shape fits a system-observed fact about a pull
+-- request's own lifecycle; these two columns match the ones already sitting
+-- next to them on incidents for exactly that kind of fact.
+ALTER TABLE incidents ADD COLUMN pr_closed_unmerged_at timestamptz;
+ALTER TABLE incidents ADD COLUMN pr_rejection_reason text;
+
+-- No index: read by incident id (the primary key) for exactly one row, same
+-- as every other pr_* column.

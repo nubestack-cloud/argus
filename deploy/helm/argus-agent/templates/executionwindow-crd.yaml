@@ -1,0 +1,126 @@
+{{- if not (include "argus-agent.skip" .) }}
+{{- if .Values.policyController.enabled }}
+# BACKLOG.md F14 — per-execution admission-policy scoping.
+#
+# ExecutionWindow is a cluster-scoped CRD holding exactly ONE instance
+# (metadata.name: argus-execution-windows, never created by this chart —
+# internal/agent/policywindow.go's openExecutionWindow creates it lazily on
+# the first widened plan a cluster ever executes). Its spec.windows is a
+# list of currently-approved, temporary field-widening entries — one per
+# in-flight execution that needs one — read by
+# templates/validatingadmissionpolicy.yaml's paramKind/paramRef additions.
+#
+# ONE OBJECT HOLDING A LIST, NOT ONE OBJECT PER WINDOW
+#
+# See internal/agent/policywindow.go's own header for the full reasoning.
+# In short: a ValidatingAdmissionPolicyBinding's paramRef can name exactly
+# one object directly, or match several via a label selector — and the
+# selector form's "permit if ANY matched param object permits it" is not a
+# semantics this chart wants to depend on getting right. Naming one object
+# directly sidesteps the question entirely: there is only ever one param
+# object, and CEL asks "does ANY entry in ITS list match this request" with
+# an ordinary, unambiguous `.exists()` over a schema-typed array.
+#
+# WHY A CRD RATHER THAN A ConfigMap
+#
+# A ValidatingAdmissionPolicy's paramKind CAN be a ConfigMap (Kubernetes
+# supports it, exposing `params.data`/`params.binaryData` as string-keyed
+# maps to CEL) — investigated and rejected for this specific shape. A
+# ConfigMap's values are always strings, so a LIST of structured entries
+# would have to be encoded as a single delimited string and re-split inside
+# CEL (the Kubernetes CEL library does enable the "strings" extension,
+# which has `.split()`), which trades a schema-typed, individually
+# validated array for a hand-rolled serialisation format that both this
+# chart's CEL and internal/agent's Go have to agree on byte-for-byte, with
+# no schema to catch a divergence. A CRD's OpenAPI schema gives every field
+# a real type, gives the API server something to validate on write (a
+# malformed entry is rejected at admission into THIS object, not silently
+# stored as an unparseable string), and gives CEL a real
+# `params.spec.windows[*].targetUid`-shaped structure to index rather than a
+# string to parse.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: executionwindows.argus.io
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  group: argus.io
+  scope: Cluster
+  names:
+    plural: executionwindows
+    singular: executionwindow
+    kind: ExecutionWindow
+    listKind: ExecutionWindowList
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                windows:
+                  type: array
+                  # Bounded, generously, against a runaway hub opening
+                  # windows without ever closing them — a real bug elsewhere
+                  # should surface as a rejected write here, not as an
+                  # unboundedly growing object. Far above any realistic
+                  # concurrent-execution count on one cluster (this
+                  # codebase's own unattended blast-radius caps top out at
+                  # MaxFleetWide=10/hour, fleet-wide, let alone per cluster).
+                  maxItems: 200
+                  items:
+                    type: object
+                    required: [planId, targetUid, targetName, fieldPath, openedAt]
+                    properties:
+                      planId:
+                        type: string
+                        description: >-
+                          The RemediationPlan/incident id this window was
+                          opened for — internal/agent/policywindow.go's
+                          close_execution_window removes every entry
+                          matching this value.
+                      targetApiGroup:
+                        type: string
+                      targetKind:
+                        type: string
+                      targetNamespace:
+                        type: string
+                      targetName:
+                        type: string
+                      targetUid:
+                        type: string
+                        description: >-
+                          The live object's metadata.uid, resolved by the
+                          hub moments before opening this window
+                          (internal/api/executionwindow.go's
+                          planWindowRequirements) — never a name/namespace
+                          pair alone, so a delete-and-recreate under the
+                          same name cannot inherit a stale window.
+                      fieldPath:
+                        type: string
+                        description: >-
+                          Dot-notation path (internal/remediation's
+                          normaliseFieldPath convention), matching exactly
+                          one of the reviewed, enumerated clauses
+                          templates/validatingadmissionpolicy.yaml actually
+                          knows how to widen
+                          (internal/remediation.FieldPathIsWindowable) — an
+                          entry naming any other path simply matches
+                          nothing in that policy's CEL.
+                      openedAt:
+                        type: string
+                        format: date-time
+                        description: >-
+                          Stamped by internal/agent itself, from ITS OWN
+                          clock, when the entry is written — never
+                          hub-supplied — so this agent's own TTL sweep
+                          (BACKLOG.md F14's crash-safety backstop) cannot be
+                          fooled by a hub that lied about timing.
+              required: [windows]
+{{- end }}
+{{- end }}

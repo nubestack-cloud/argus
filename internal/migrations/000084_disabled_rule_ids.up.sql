@@ -1,0 +1,42 @@
+-- BUGS.md 111: disabling one "detector" hub-side disables all 33 rule-format
+-- findings at once, because every rule (internal/agent/rules/default-
+-- rules.yaml) is emitted by the sweep detector with the SAME shared
+-- DetectorID ("k8s-sweep" -- internal/agent/sweep_detector.go's
+-- sweepDetectorID). A rule's own identity travels separately on
+-- internal/tunnel.Finding.RuleID (migration 000071). This migration adds the
+-- narrower-granularity control the bug asks for: a disabled_rule_ids set
+-- checked ALONGSIDE disabled_detector_ids (migration 000026), against
+-- Finding.RuleID specifically -- it does not touch or replace the existing
+-- detector-level column or its semantics in any way.
+--
+-- Same hub-side-filter-only shape as disabled_detector_ids: there is no
+-- hub-to-agent config-push path in internal/tunnel's protocol today, so
+-- "disabling a rule" means the hub drops what it already received before it
+-- becomes a findings row or an incident -- the agent keeps evaluating the
+-- rule and keeps sending its findings exactly as before. See
+-- internal/gateway/finding.go's handleFinding doc comment for the
+-- authoritative statement of this, mirrored onto the rule-level control.
+--
+-- Deliberately NOT a CHECK constraint enumerating the known rule IDs, unlike
+-- disabled_detector_ids' org_settings_disabled_detector_ids_valid (migration
+-- 000026, widened by 000066): that constraint works because there are only
+-- ever 2-3 hand-written detector IDs, added at the rate of one every several
+-- months. Rule IDs come from internal/agent/rules/default-rules.yaml, a
+-- 33-entry (and growing) catalogue that changes far more often and lives in
+-- the agent's own package, not the hub's schema -- a CHECK constraint here
+-- would need a new migration every time a rule is added, renamed or removed,
+-- which is exactly the kind of hub/agent coupling this codebase's "the agent
+-- and hub are separate deployables" convention (see 000026's own comment)
+-- avoids elsewhere. internal/api/settings.go's knownRuleIDs (hand-maintained,
+-- like knownDetectorIDs) does this validation at the API boundary instead,
+-- with a test asserting it matches internal/agent/rules/default-rules.yaml's
+-- real rule set exactly, so drift is caught by CI rather than by a silent
+-- CHECK-constraint mismatch.
+--
+-- '{}' default, NOT NULL: empty means "no rule is disabled" -- today's actual,
+-- unchanged behavior -- matching disabled_detector_ids' own nil/empty-means-
+-- nothing-disabled convention exactly. No env-var fallback tier, also
+-- matching disabled_detector_ids: a brand-new setting, DB-backed from day
+-- one.
+ALTER TABLE org_settings
+  ADD COLUMN disabled_rule_ids text[] NOT NULL DEFAULT '{}';

@@ -1,0 +1,124 @@
+{{- if not (include "argus-agent.skip" .) }}
+{{- if .Values.policyController.enabled }}
+# argus-policy-controller — BACKLOG.md F14's per-execution admission-policy
+# scoping identity.
+#
+# WHAT THIS IS FOR
+#
+# The standing ValidatingAdmissionPolicy field-restriction (templates/
+# validatingadmissionpolicy.yaml) is the layer that holds even if the hub is
+# fully compromised, and F11 needs it to widen past its own fixed allowlist
+# for specific, reviewed fields on specific, per-execution objects — briefly,
+# around exactly one approved execution, then re-locked. This identity is
+# who the hub asks to do that widening: it creates/updates the argus.io/v1
+# ExecutionWindow singleton (templates/executionwindow-crd.yaml) that the
+# widened policy clauses read via paramRef.
+#
+# WHY A SEPARATE IDENTITY, RATHER THAN FOLDING INTO argus-investigate OR
+# argus-remediate
+#
+# Neither existing identity can safely be the one that does this:
+#   - argus-investigate is read-only by design (non-negotiable 1) — granting
+#     it ANY write verb, even one this narrow, would make a compromised
+#     investigation path write-capable, which is exactly what that identity
+#     exists to be structurally incapable of.
+#   - argus-remediate could in principle hold this RBAC too (it is already a
+#     write-capable identity), but doing so would let a compromised
+#     argus-remediate identity widen its OWN admission-policy bound — i.e.
+#     the one control that is supposed to hold when argus-remediate itself
+#     (or the hub instructing it) is compromised would then be modifiable by
+#     the very thing it exists to bound. Keeping the RBAC to create/update
+#     ExecutionWindow objects on a SEPARATE credential means a compromised
+#     hub can still ask this identity to widen a field (the hub's own
+#     compromise already lets it call any tool over the tunnel — see this
+#     file's own "what this bounds and what it does not" note below), but a
+#     compromised argus-remediate identity ALONE, without also controlling
+#     this separate credential, cannot.
+#
+# RBAC SHAPE — the narrowest grant that makes the mechanism work
+#
+# get/list/watch/create/update/patch/delete on argus.io/v1 ExecutionWindow
+# objects, and NOTHING else: no verb on any workload resource
+# (Deployments, StatefulSets, ...), no verb on
+# ValidatingAdmissionPolicy/ValidatingAdmissionPolicyBinding objects
+# themselves (this identity widens what a policy ALREADY says by feeding it
+# data through paramRef; it never edits the policy object), no verb on
+# Secrets. Cluster-scoped, matching the CRD's own scope — there is one
+# ExecutionWindow object per cluster, not one per namespace.
+#
+# WHAT THIS BOUNDS, AND WHAT IT DOES NOT — stated precisely rather than
+# oversold
+#
+# A compromised argus-policy-controller identity, ON ITS OWN, can create or
+# edit ExecutionWindow entries but cannot patch a single workload field with
+# that alone — it holds no RBAC to do so. It can only widen what
+# argus-remediate's OWN, separately-authorized write may subsequently do,
+# and only for the fixed, reviewed set of (Kind, fieldPath) pairs
+# templates/validatingadmissionpolicy.yaml's CEL actually recognises
+# (internal/remediation.FieldPathIsWindowable) — naming any other field in
+# an ExecutionWindow entry matches nothing.
+#
+# What this does NOT change: a fully compromised HUB can already call
+# open_execution_window at will (it is the hub's own instruction, dispatched
+# like any other tool call), so for the specific fields this mechanism has
+# been taught to widen, a compromised hub's effective reach over those
+# fields on arbitrary objects is real, not merely theoretical — this is the
+# cost BACKLOG.md's F14 decision record names explicitly ("capability... at
+# the cost of..."), accepted deliberately on 2026-08-22, not a gap
+# introduced silently by this implementation. It is bounded to exactly the
+# fields someone has reviewed and wired a CEL clause for (today: two
+# low-risk integers, spec.progressDeadlineSeconds and
+# spec.revisionHistoryLimit) — nothing about this mechanism widens the
+# compromised-hub bound for any field nobody has deliberately added a clause
+# for.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.policyController.serviceAccount.name }}
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+---
+# The long-lived token Secret — same mechanism as templates/dryrun.yaml's,
+# for the same reason: a projected serviceAccountToken volume only ever
+# mints a token for the POD'S OWN spec.serviceAccountName, so a credential
+# for a genuinely different ServiceAccount needs the still-supported
+# kubernetes.io/service-account-token Secret annotation instead.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Values.policyController.serviceAccount.name }}-token
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/service-account.name: {{ .Values.policyController.serviceAccount.name }}
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Values.policyController.serviceAccount.name }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["argus.io"]
+    resources: ["executionwindows"]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Values.policyController.serviceAccount.name }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.policyController.serviceAccount.name }}
+    namespace: {{ .Values.namespace.name }}
+roleRef:
+  kind: ClusterRole
+  name: {{ .Values.policyController.serviceAccount.name }}
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+{{- end }}

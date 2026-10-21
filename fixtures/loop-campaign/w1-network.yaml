@@ -1,0 +1,84 @@
+# Loop campaign, wave 1 — Service, Ingress and NetworkPolicy faults (README.md).
+#
+#  S12 Service whose selector matches no pod      → ServiceNoEndpoints → incident
+#  S13 Service targetPort names a port no pod has → ServiceTargetPortUnresolved → incident
+#  S14 Ingress backed by a Service that does not exist → IngressBackendServiceMissing → incident
+#  S15 Ingress pointing at a port its Service does not expose → IngressBackendPortMismatch
+#  S16 Two Ingresses claiming the same host and path → IngressHostPathCollision
+#  S17 NetworkPolicy selecting no pod (a risk: finding, NOT an incident — negative control)
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: s12-web, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S12}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: s12-web}}
+  template:
+    metadata: {labels: {app: s12-web}}
+    spec:
+      containers:
+        - {name: web, image: nginx:1.27-alpine, ports: [{name: http, containerPort: 80}]}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: s12-web, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S12}}
+spec:
+  selector: {app: s12-website}
+  ports: [{port: 80, targetPort: http}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: s13-web, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S13}}
+spec:
+  selector: {app: s12-web}
+  ports: [{port: 80, targetPort: https}]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: {name: s14-shop, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S14}}
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: s14.argus-loop.example
+      http:
+        paths:
+          - {path: /, pathType: Prefix, backend: {service: {name: s14-shop-frontend, port: {number: 80}}}}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: {name: s15-api, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S15}}
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: s15.argus-loop.example
+      http:
+        paths:
+          - {path: /, pathType: Prefix, backend: {service: {name: s13-web, port: {number: 8080}}}}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: {name: s16-blog-a, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S16}}
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: s16.argus-loop.example
+      http:
+        paths:
+          - {path: /blog, pathType: Prefix, backend: {service: {name: s13-web, port: {number: 80}}}}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: {name: s16-blog-b, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S16}}
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: s16.argus-loop.example
+      http:
+        paths:
+          - {path: /blog, pathType: Prefix, backend: {service: {name: s12-web, port: {number: 80}}}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: s17-orphan-policy, namespace: argus-loop-test, labels: {loop.argus.io/scenario: S17}}
+spec:
+  podSelector: {matchLabels: {app: s17-retired}}
+  policyTypes: [Ingress]

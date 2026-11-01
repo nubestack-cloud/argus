@@ -60,4 +60,4 @@ repository.
 Every value is documented in `helm show values oci://registry-1.docker.io/nubestack/argus-agent-chart --version 0.2.0`.
 
 User guide (installation and use): <https://argus.nubestack.com/>. Install and upgrade reference:
-[`docs/INSTALL.md`](https://github.com/nubestack-collab/ARGUS/blob/main/docs/INSTALL.md).
+[`docs/INSTALL.md`](https://github.com/nubestack-cloud/argus/blob/main/docs/INSTALL.md).

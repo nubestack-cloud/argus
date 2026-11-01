@@ -280,6 +280,24 @@ function ThemeToggle() {
 // able to answer questions.
 const IDENTITY_UNAVAILABLE = 'Account unavailable'
 
+// The published user guide (the docs-argus repository).
+const DOCUMENTATION_URL = 'https://argus.nubestack.com/'
+// ARGUS is AGPL-3.0, whose section 13 has a network service offer its users
+// the source; this is that offer.
+const SOURCE_CODE_URL = 'https://github.com/nubestack-cloud/argus'
+
+// The arrow is decoration; the hidden words are what say it.
+function ExternalMark() {
+  return (
+    <>
+      <svg className="account-menu-external" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden="true">
+        <path d="M6 3H3v10h10v-3M9 3h4v4M13 3 7 9" />
+      </svg>
+      <span className="visually-hidden">(opens in a new tab)</span>
+    </>
+  )
+}
+
 function AccountMenu({
   email,
   identityStatus,
@@ -419,6 +437,29 @@ function AccountMenu({
           >
             Keyboard shortcuts <kbd className="kbd-hint">?</kbd>
           </button>
+          {/* The user guide's front page rather than a deep link: it is where
+              both a first look and a returning question start, and its
+              navigation and search reach every other page. */}
+          <a
+            role="menuitem"
+            href={DOCUMENTATION_URL}
+            target="_blank"
+            rel="noreferrer noopener"
+            onClick={() => setOpen(false)}
+          >
+            Documentation
+            <ExternalMark />
+          </a>
+          <a
+            role="menuitem"
+            href={SOURCE_CODE_URL}
+            target="_blank"
+            rel="noreferrer noopener"
+            onClick={() => setOpen(false)}
+          >
+            Source code
+            <ExternalMark />
+          </a>
           {/* The menu stays open while the hub answers, with the item saying
               so: sign-out waits for the revocation to be confirmed (bounded —
               see AuthContext's logout) and then the whole shell unmounts. */}

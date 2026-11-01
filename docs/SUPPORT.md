@@ -87,7 +87,7 @@ The procedure is in [INSTALL.md](INSTALL.md#upgrading). What it relies on:
 ```bash
 cosign verify docker.io/nubestack/argus-hub:0.2.0 \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github.com/nubestack-collab/ARGUS/\.github/workflows/release\.yml@refs/tags/v'
+  --certificate-identity-regexp '^https://github.com/nubestack-cloud/argus/\.github/workflows/release\.yml@refs/tags/v'
 ```
 
 The same works for `argus-agent`, `argus-cli-runner`, `argus-hub-chart` and

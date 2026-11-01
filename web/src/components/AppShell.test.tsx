@@ -208,3 +208,23 @@ describe('AppShell — live QA fixes', () => {
     expect(approvals.querySelector('.app-nav-label')?.textContent).toBe('Approvals')
   })
 })
+
+describe('AppShell — account menu', () => {
+  it('links to the user guide in a new tab, and says so', () => {
+    renderShell()
+    fireEvent.click(screen.getByRole('button', { name: /Account menu/ }))
+    const docs = screen.getByRole('menuitem', { name: /Documentation/ })
+    expect(docs.getAttribute('href')).toBe('https://argus.nubestack.com/')
+    expect(docs.getAttribute('target')).toBe('_blank')
+    expect(docs.getAttribute('rel')).toContain('noopener')
+    expect(docs.textContent).toContain('(opens in a new tab)')
+  })
+
+  it('offers the source code, as the AGPL asks of a network service', () => {
+    renderShell()
+    fireEvent.click(screen.getByRole('button', { name: /Account menu/ }))
+    const source = screen.getByRole('menuitem', { name: /Source code/ })
+    expect(source.getAttribute('href')).toBe('https://github.com/nubestack-cloud/argus')
+    expect(source.getAttribute('target')).toBe('_blank')
+  })
+})

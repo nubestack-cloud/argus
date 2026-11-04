@@ -197,6 +197,18 @@ spec:
             - name: ARGUS_METRICS_PROMETHEUS_PORT
               value: {{ int $prom.port | quote }}
             {{- end }}
+            {{- with include "argus-agent.openshiftMetricsURL" . }}
+            # OpenShift's platform monitoring through its Thanos querier, as
+            # this Pod's own ServiceAccount (the token and the service CA
+            # are both in the automounted kube-api-access volume) — see
+            # argus-agent.openshiftMetricsURL for why not prometheus-operated.
+            - name: ARGUS_METRICS_EXTERNAL_URL
+              value: {{ . | quote }}
+            - name: ARGUS_METRICS_EXTERNAL_BEARER_TOKEN_FILE
+              value: /var/run/secrets/kubernetes.io/serviceaccount/token
+            - name: ARGUS_METRICS_EXTERNAL_CA_FILE
+              value: /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt
+            {{- end }}
             {{- with .Values.metrics.external }}{{- if .url }}
             # PROJECT.md PG17: a Prometheus-compatible endpoint outside the
             # cluster, used instead of prometheusService above.

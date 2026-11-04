@@ -272,6 +272,32 @@ set, wins, so one setting reaches the hub and the agent it installs.
 {{- end -}}
 
 {{/*
+OpenShift's own cluster monitoring, as the URL query_metrics uses, or "" when
+it does not apply. On OpenShift (and OKD) the platform Prometheus listens on
+127.0.0.1 inside its pod: prometheus-operated:9090, which the Service
+detection below would otherwise pick, accepts no connection from anywhere
+else, so every query through the services/proxy path failed. What OpenShift
+does serve is the Thanos querier's kube-rbac-proxy on the "web" port
+(9091), over the service-CA certificate, authenticating the caller's own
+ServiceAccount token. The agent's existing cluster-wide read already
+satisfies its authorisation, so no extra RBAC is granted for it.
+
+Applies only when nothing was configured by hand (prometheusService,
+external.url), autoDetect is on, the cluster is OpenShift, and the Service
+exists. Under `helm template` there is no cluster to look at, and it is "".
+*/}}
+{{- define "argus-agent.openshiftMetricsURL" -}}
+{{- $m := .Values.metrics -}}
+{{- if and $m.autoDetect (not $m.external.url) (not (and $m.prometheusService.namespace $m.prometheusService.name)) (include "argus-agent.openshift" .) -}}
+{{- with (lookup "v1" "Service" "openshift-monitoring" "thanos-querier") -}}
+{{- $port := 9091 -}}
+{{- range .spec.ports -}}{{- if eq (.name | default "") "web" -}}{{- $port = int .port -}}{{- end -}}{{- end -}}
+{{- printf "https://thanos-querier.openshift-monitoring.svc:%d" $port -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 The Prometheus Service query_metrics uses, as JSON {namespace, name, port,
 source}, or {} for none. metrics.prometheusService wins when set; otherwise,
 with metrics.autoDetect (the default) and no metrics.external.url, the chart
@@ -286,7 +312,7 @@ client dry run there is no cluster to look at, and nothing is detected.
 {{- $m := .Values.metrics -}}
 {{- if and $m.prometheusService.namespace $m.prometheusService.name -}}
 {{- dict "namespace" $m.prometheusService.namespace "name" $m.prometheusService.name "port" (int $m.prometheusService.port) "source" "set" | toJson -}}
-{{- else if or $m.external.url (not $m.autoDetect) (not (lookup "v1" "Namespace" "" "kube-system")) -}}
+{{- else if or $m.external.url (not $m.autoDetect) (not (lookup "v1" "Namespace" "" "kube-system")) (include "argus-agent.openshiftMetricsURL" .) -}}
 {{- dict | toJson -}}
 {{- else -}}
 {{- $excludes := list "exporter" "operator" "adapter" "alertmanager" "pushgateway" "blackbox" "kube-state" "webhook" "vmagent" "vminsert" "vmalert" "sidecar" "store" "compact" "receive" "rule" -}}

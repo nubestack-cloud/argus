@@ -371,17 +371,13 @@ func attachOutboundReferences(out []sweepCandidate, objectsByKind map[string][]*
 		out[i].References = make([]tunnel.ObjectReference, 0, len(refs)+len(produced))
 		out[i].References = append(out[i].References, produced...)
 		for _, r := range refs {
-			// Same defaulting rule checkGenericDanglingReference itself
-			// applies: a reference naming no namespace means "the referring
-			// object's own namespace" for a namespaced kind (Gateway API's
-			// own convention for parentRefs, and most core
-			// ObjectReference-family types) — recorded here explicitly
-			// rather than left empty, since the hub-side impact check needs
-			// to match this against the REAL Gateway/GatewayClass/etc.'s
-			// own namespace, not an unresolved blank.
+			// Resolved explicitly rather than left as written, since the
+			// hub-side impact check matches this against the REAL
+			// Gateway/GatewayClass/etc.'s own namespace, not an unresolved
+			// blank or a namespace a cluster-scoped kind does not have.
 			ns := r.namespace
-			if namespaced, known := kindIsNamespaced(r.kind); ns == "" && known && namespaced {
-				ns = obj.GetNamespace()
+			if namespaced, known := kindIsNamespaced(r.kind); known {
+				ns = resolveReferenceNamespace(r.namespace, namespaced, obj.GetNamespace())
 			}
 			out[i].References = append(out[i].References, tunnel.ObjectReference{Kind: r.kind, Namespace: ns, Name: r.name})
 		}
@@ -1021,7 +1017,13 @@ func checkGenericDanglingReference(snap *unstructuredSnapshot, now time.Time) []
 	var out []sweepCandidate
 	existenceIndex := snap.existenceIndex()
 	for kind, objs := range snap.objects {
+		if danglingReferenceExemptReferrerKind(kind) {
+			continue
+		}
 		for _, o := range objs {
+			if isOpenShiftTemplate(o) {
+				continue
+			}
 			var refs []objectRef
 			// PROJECT.md B148: every top-level key except metadata, not just
 			// spec/status. Confirmed live 2026-09-06 (breadth-campaign
@@ -1078,10 +1080,13 @@ func checkGenericDanglingReference(snap *unstructuredSnapshot, now time.Time) []
 					// look like cluster faults.
 					continue
 				}
-				ns := r.namespace
-				if ns == "" && namespaced {
-					ns = o.GetNamespace()
+				if strings.Contains(r.name, "${") {
+					// An unsubstituted template parameter, not a name: no
+					// object can ever be called "${NAME}", so its absence
+					// says nothing about the cluster.
+					continue
 				}
+				ns := resolveReferenceNamespace(r.namespace, namespaced, o.GetNamespace())
 				if existenceIndex[r.kind][ns+"/"+r.name] {
 					continue
 				}
@@ -1100,6 +1105,46 @@ func checkGenericDanglingReference(snap *unstructuredSnapshot, now time.Time) []
 		}
 	}
 	return out
+}
+
+// resolveReferenceNamespace is the namespace a kind+name reference actually
+// points into. A cluster-scoped target has none, whatever the reference
+// carries: OpenShift's operators write Events whose regarding names a Node
+// together with the Event's own namespace, and looking that Node up as
+// "<ns>/<name>" misses a Node that exists. A namespaced target named without
+// a namespace is in the referring object's own namespace (Gateway API's
+// convention for parentRefs, and most core ObjectReference-family types).
+func resolveReferenceNamespace(refNamespace string, targetNamespaced bool, referrerNamespace string) string {
+	if !targetNamespaced {
+		return ""
+	}
+	if refNamespace == "" {
+		return referrerNamespace
+	}
+	return refNamespace
+}
+
+// danglingReferenceExemptReferrerKind names the kinds whose kind+name pairs
+// are records, not dependencies, so a missing target is expected rather than
+// a fault.
+//
+// Event is the one entry. An Event is a historical note about an object
+// (regarding/involvedObject), kept for an hour by default after the object
+// it describes is gone, which is precisely when it is still useful. Treating
+// it as a dependency turns every Event about a deleted Pod into a finding,
+// which on a busy cluster is most of what the agent would send, and v1 and
+// events.k8s.io/v1 serve the same Event, so each would be reported twice.
+func danglingReferenceExemptReferrerKind(kind string) bool {
+	return kind == "Event"
+}
+
+// isOpenShiftTemplate reports a template.openshift.io Template. Its objects[]
+// are blueprints instantiated on demand, not objects that should exist, so a
+// reference inside one to something absent is not a dangling reference.
+// Matched by group, not by the bare Kind "Template", which other APIs could
+// also use for something live.
+func isOpenShiftTemplate(o *unstructured.Unstructured) bool {
+	return o.GetKind() == "Template" && strings.HasPrefix(o.GetAPIVersion(), "template.openshift.io/")
 }
 
 func danglingRefNamespaceClause(namespace string, namespaced bool) string {

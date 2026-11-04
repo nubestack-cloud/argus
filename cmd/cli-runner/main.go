@@ -366,13 +366,37 @@ func (r claudeResult) claudeTokens() (in, cacheRead, out int) {
 	return in, cacheRead, out
 }
 
+// cliReportedError is a failure the CLI itself described in its structured
+// output, as opposed to one this runner inferred. Claude Code in
+// `--output-format json` mode writes its error (a rejected credential, a
+// refused request, an exhausted turn budget) as an is_error result on STDOUT
+// and exits non-zero with an empty stderr, so this message is the only
+// statement of what went wrong that exists anywhere.
+type cliReportedError struct {
+	agent   string
+	subtype string
+	message string
+}
+
+func (e *cliReportedError) Error() string {
+	msg := strings.TrimSpace(e.message)
+	switch {
+	case msg != "" && e.subtype != "" && e.subtype != "success":
+		return fmt.Sprintf("%s reported an error (%s): %s", e.agent, e.subtype, truncate(msg, 500))
+	case msg != "":
+		return fmt.Sprintf("%s reported an error: %s", e.agent, truncate(msg, 500))
+	default:
+		return fmt.Sprintf("%s reported an error result (subtype %q)", e.agent, e.subtype)
+	}
+}
+
 func parseClaudeJSON(stdout []byte) (investigateResponse, error) {
 	var r claudeResult
 	if err := json.Unmarshal(bytes.TrimSpace(stdout), &r); err != nil {
 		return investigateResponse{}, fmt.Errorf("parse claude JSON output: %w", err)
 	}
 	if r.IsError {
-		return investigateResponse{}, fmt.Errorf("claude reported an error result (subtype %q)", r.Subtype)
+		return investigateResponse{}, &cliReportedError{agent: "claude", subtype: r.Subtype, message: r.Result}
 	}
 	tokensIn, tokensCacheRead, tokensOut := r.claudeTokens()
 	return investigateResponse{
@@ -836,10 +860,8 @@ func execAgent(ctx context.Context, spec agentSpec, args []string, workDir strin
 		return investigateResponse{TimedOut: true, DurationMs: elapsed, CostBasis: costBasisFor(spec.name, 0)}
 	}
 	if runErr != nil {
-		// stderr is truncated into the error: a CLI's stderr can be long, and
-		// the hub logs this verbatim.
 		return investigateResponse{
-			Error:      fmt.Sprintf("agent %s failed: %v: %s", spec.name, runErr, truncate(stderr.String(), 2000)),
+			Error:      fmt.Sprintf("agent %s failed: %v: %s", spec.name, runErr, failureDetail(spec, stdout.Bytes(), stderr.Bytes())),
 			DurationMs: elapsed,
 		}
 	}
@@ -909,18 +931,70 @@ func extraArgs(agent string) []string {
 	return strings.Fields(raw)
 }
 
+// failureDetail says why a CLI run that exited non-zero failed, for the error
+// the hub shows on the incident. stderr first (truncated: it can be long, and
+// the hub logs it verbatim); when that is empty, an error the CLI described in
+// its own structured stdout, which is where Claude Code puts it.
+func failureDetail(spec agentSpec, stdout, stderr []byte) string {
+	detail := strings.TrimSpace(string(stderr))
+	var reported *cliReportedError
+	if _, err := spec.parse(stdout); errors.As(err, &reported) {
+		if detail == "" {
+			return reported.Error()
+		}
+		return truncate(detail, 2000) + "; " + reported.Error()
+	}
+	return truncate(detail, 2000)
+}
+
+// validateAgent runs the CLI's version command the way an investigation runs
+// the CLI: from a fresh scratch directory that is also its HOME, with the
+// same allowlisted environment. Not the runner's own HOME, which is not
+// writable under an arbitrary UID: OpenShift's restricted SCC runs this
+// container as a UID with no passwd entry, so HOME is "/", and Claude Code
+// fails even `--version` when it cannot write ~/.claude.json, which made an
+// installed CLI look absent.
 func validateAgent(name string) (string, error) {
 	spec, ok := agentSpecs[name]
 	if !ok {
 		return "", fmt.Errorf("unknown agent %q", name)
 	}
+	home, err := os.MkdirTemp("", "argus-cli-version-*")
+	if err != nil {
+		return "", fmt.Errorf("create scratch HOME for %s: %w", name, err)
+	}
+	defer os.RemoveAll(home)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, binaryFor(spec), spec.versionArgs...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, binaryFor(spec), spec.versionArgs...)
+	cmd.Dir = home
+	cmd.Env = cliEnv(home)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("%s %s: %w", binaryFor(spec), strings.Join(spec.versionArgs, " "), err)
+		return "", fmt.Errorf("%s %s: %w: %s", binaryFor(spec), strings.Join(spec.versionArgs, " "), err, truncate(strings.TrimSpace(string(out)), 300))
 	}
-	return strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0]), nil
+	return versionLine(string(out)), nil
+}
+
+// versionLine picks the version out of a CLI's version output. Codex prints a
+// "WARNING: ..." line about its PATH helpers ahead of the version whenever its
+// home is under a temporary directory, so the first line alone is not it.
+func versionLine(out string) string {
+	var first string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if first == "" {
+			first = line
+		}
+		if !strings.HasPrefix(strings.ToUpper(line), "WARNING") {
+			return line
+		}
+	}
+	return first
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

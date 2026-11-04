@@ -114,6 +114,20 @@ mismatch or a hub that cannot reach its database.
 {{- if and (eq (toString .Values.cliRunner.enabled) "true") (not (include "argus-hub.cliRunnerCredentialSupplied" .)) -}}
 {{- fail "\n\ncliRunner.enabled=true needs a model credential.\n\nARGUS never ships one. Set cliRunner.modelCredential.anthropicApiKey, .claudeCodeOauthToken for a Claude subscription, .openaiApiKey for Codex, or point .existingSecret at a Secret holding the needed key.\n" -}}
 {{- end -}}
+{{- /*
+  The two Anthropic credentials are told apart by their prefix, and each only
+  works in its own variable: a subscription token passed as ANTHROPIC_API_KEY
+  is rejected as "Invalid API key" by every investigation while the runner's
+  connection test, which never calls the model, still passes. Refuse the swap
+  here, where it can be named, rather than at 3am. The message names the
+  option, never the value.
+*/ -}}
+{{- if hasPrefix "sk-ant-oat" (trim (toString .Values.cliRunner.modelCredential.anthropicApiKey)) -}}
+{{- fail "\n\ncliRunner.modelCredential.anthropicApiKey holds a Claude subscription token (it starts sk-ant-oat), not an API key, and Anthropic's API rejects it there.\n\nPass it as cliRunner.modelCredential.claudeCodeOauthToken instead, with --set cliRunner.authMode=subscription, and clear the other: --set cliRunner.modelCredential.anthropicApiKey=\n" -}}
+{{- end -}}
+{{- if hasPrefix "sk-ant-api" (trim (toString .Values.cliRunner.modelCredential.claudeCodeOauthToken)) -}}
+{{- fail "\n\ncliRunner.modelCredential.claudeCodeOauthToken holds an Anthropic API key (it starts sk-ant-api), not a subscription token.\n\nPass it as cliRunner.modelCredential.anthropicApiKey instead, and clear the other: --set cliRunner.modelCredential.claudeCodeOauthToken=\n" -}}
+{{- end -}}
 {{- end -}}
 
 {{/*

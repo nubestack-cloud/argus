@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -747,6 +748,7 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 	}
 
+	hubEndpoint = effectiveTunnelEndpoint(cfg.TunnelEndpoint, hubEndpoint)
 	if hubEndpoint == "" {
 		return errors.New("agent: no hub tunnel endpoint known (neither persisted nor freshly enrolled) — cannot connect")
 	}
@@ -784,6 +786,22 @@ func Run(ctx context.Context, cfg Config) error {
 // investigation agent writing its identity, rather than after whatever a
 // backoff had grown to by then.
 const sharedIdentityPollInterval = 10 * time.Second
+
+// effectiveTunnelEndpoint decides where the tunnel is dialled. An explicit
+// ARGUS_TUNNEL_ENDPOINT (the agent chart's hub.tunnelEndpoint, or the
+// in-cluster address the hub chart gives its own embedded agent) wins on
+// every path; the endpoint the hub advertised at enrollment, as persisted,
+// is the fallback. It must be one rule for all three identity paths: when only
+// the persisted path honoured the override, a freshly enrolled agent used the
+// hub's public URL for its whole first life, so the hub's own agent
+// hairpinned out through the Ingress and, behind a certificate it did not
+// trust, could not connect at all until its pod was replaced.
+func effectiveTunnelEndpoint(configured, learned string) string {
+	if c := strings.TrimSpace(configured); c != "" {
+		return c
+	}
+	return learned
+}
 
 // awaitSharedIdentity blocks until the identity store holds a complete
 // enrollment, then returns it — PROJECT.md E11's "one cluster record, two

@@ -548,7 +548,7 @@ export function AIProvidersCard({
                   id="providerRunnerUrl"
                   type="text"
                   required
-                  placeholder="http://argus-cli-runner:8090"
+                  placeholder="http://argus-hub-cli-runner:8090"
                   value={form.runnerUrl ?? ''}
                   onChange={(e) => setForm({ ...form, runnerUrl: e.target.value })}
                 />

@@ -56,6 +56,28 @@ See [Upgrading to 0.2.0](docs/INSTALL.md#upgrading-from-a-release-before-020) fo
 
 ### Fixed
 
+- **Metrics work on OpenShift and OKD.** The platform Prometheus listens only inside its own pod,
+  so the `prometheus-operated` Service the agent chart picked accepted no connection and every
+  metrics panel and `query_metrics` call failed. On OpenShift the agent now queries the cluster's
+  Thanos querier over the service CA, as its own ServiceAccount, with no extra permissions.
+- **The Claude Code runner works on OpenShift.** Under OpenShift's arbitrary UID the runner's own
+  home is not writable, `claude --version` failed, and Claude Code was reported as not installed.
+- **A failed CLI investigation says why.** Claude Code reports a rejected credential on stdout and
+  exits with an empty stderr; the incident showed only `exit status 1:`. It now shows the CLI's
+  own message, e.g. *Invalid API key*.
+- **Switching the runner's credential takes effect.** A credential option cleared on upgrade stayed
+  in the Secret and the CLI kept using it, and a changed credential was not picked up until the
+  runner restarted. The chart now overwrites cleared keys and rolls the runner when the credential
+  changes, and refuses a Claude subscription token in `anthropicApiKey` (or an API key in
+  `claudeCodeOauthToken`), naming the option to use.
+- **The hub's own agent tunnels in-cluster from its first start.** A freshly enrolled agent ignored
+  `ARGUS_TUNNEL_ENDPOINT` (the hub chart's in-cluster address, or an agent's `hub.tunnelEndpoint`)
+  until its first restart, and went out through the public Ingress instead.
+- **No more false broken-reference findings.** A reference to a cluster-scoped object that carries
+  a namespace (OpenShift writes these for Nodes) reported an existing Node as missing; Events, which
+  outlive the objects they describe, and OpenShift Template blueprints are no longer read as
+  dependencies. On an OKD cluster these were most of what the agent sent.
+- **The runner URL placeholder names the chart's Service** (`http://argus-hub-cli-runner:8090`).
 - **An incident waiting on a decision closes when what it is about is deleted.** It used to stay
   open forever if its workload, or its object when it had none (a bare Pod), was deleted while a
   plan awaited approval: the plan had nothing left to act on. A pod replaced by a rollout still

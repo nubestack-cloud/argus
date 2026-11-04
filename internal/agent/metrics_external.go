@@ -40,6 +40,13 @@ type externalMetricsClient struct {
 	headers    http.Header
 	extraLabel string
 	http       *http.Client
+	// tokenFile, when set, holds a bearer token sent as Authorization on
+	// every request: this agent's own projected ServiceAccount token, for
+	// OpenShift's in-cluster Thanos querier, whose kube-rbac-proxy
+	// authenticates the caller by token rather than trusting the network.
+	// Re-read per request, because a projected token is rotated in place
+	// (hourly) and a copy read once at start-up expires.
+	tokenFile string
 }
 
 func newExternalMetricsClientFromEnv() (*externalMetricsClient, error) {
@@ -84,11 +91,18 @@ func newExternalMetricsClientFromEnv() (*externalMetricsClient, error) {
 		pool.AppendCertsFromPEM(pem)
 		tr.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
 	}
+	tokenFile := strings.TrimSpace(os.Getenv("ARGUS_METRICS_EXTERNAL_BEARER_TOKEN_FILE"))
+	if tokenFile != "" && u.Scheme != "https" {
+		// The token is this agent's own Kubernetes identity; it is never
+		// sent anywhere it could be read in transit.
+		return nil, fmt.Errorf("metrics.external.url %q must be https:// when a bearer token file is used", raw)
+	}
 	return &externalMetricsClient{
 		base:       u,
 		headers:    headers,
 		extraLabel: strings.TrimSpace(os.Getenv("ARGUS_METRICS_EXTERNAL_EXTRA_LABEL")),
 		http:       &http.Client{Timeout: 30 * time.Second, Transport: tr},
+		tokenFile:  tokenFile,
 	}, nil
 }
 
@@ -111,6 +125,14 @@ func (c *externalMetricsClient) Get(ctx context.Context, endpoint string, params
 		for _, v := range vs {
 			req.Header.Add(k, v)
 		}
+	}
+	if c.tokenFile != "" {
+		tok, err := os.ReadFile(c.tokenFile)
+		if err != nil {
+			// The path only, never the contents.
+			return nil, &promUnreachableError{fmt.Errorf("read the metrics bearer token file %s: %w", c.tokenFile, err)}
+		}
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(tok)))
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {

@@ -33,6 +33,14 @@ spec:
       labels:
         {{- include "argus-hub.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: cli-runner
+      annotations:
+        # The credential reaches the CLI through envFrom, which a running pod
+        # never re-reads: without this, an upgrade that rotates or replaces it
+        # rewrote the Secret and left the runner on the old one until something
+        # else happened to restart it. A digest of the rendered Secret, never
+        # the value. An existingSecret is outside the chart; restart the runner
+        # yourself after changing one.
+        checksum/model-credential: {{ include (print $.Template.BasePath "/secret-model-credential.yaml") . | sha256sum }}
     spec:
       # A separate pod from the hub, on purpose and not for scaling: this
       # container carries a Node runtime and a third-party CLI, and the hub pod

@@ -17,7 +17,12 @@ Both are set and differ; persistence.storageClass ({{ .Values.persistence.storag
 {{- end }}
 {{- end }}
 {{- $prom := include "argus-agent.prometheusService" . | fromJson }}
-{{- if eq ($prom.source | default "") "detected" }}
+{{- $osMetrics := include "argus-agent.openshiftMetricsURL" . }}
+{{- if $osMetrics }}
+
+Metrics: connected to OpenShift's cluster monitoring at {{ $osMetrics }}.
+To use another Prometheus, set metrics.prometheusService.* or metrics.external.url; to turn metrics off, metrics.autoDetect=false.
+{{- else if eq ($prom.source | default "") "detected" }}
 
 Metrics: connected to the Prometheus found at {{ $prom.namespace }}/{{ $prom.name }}:{{ $prom.port }}.
 To use another, set metrics.prometheusService.*; to turn metrics off, metrics.autoDetect=false.

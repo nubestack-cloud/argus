@@ -508,6 +508,21 @@ jobs:
         continue-on-error: true
         run: npm audit
 
+  release-version:
+    name: Release version — every reference agrees
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # One version names the whole release, and it is written in about twenty
+      # places (charts, the version the agent reports to the hub, the API
+      # spec, every install command). scripts/release/version.py holds the one
+      # list of them; this fails the moment any disagrees, so a release cannot
+      # ship an agent that reports the previous version or a README that
+      # installs it.
+      - name: version references agree
+        run: python3 scripts/release/version.py check
+
   migrations:
     name: Migrations — every up has a down
     runs-on: ubuntu-latest

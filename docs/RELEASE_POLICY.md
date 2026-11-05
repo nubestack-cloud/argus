@@ -18,6 +18,11 @@ tag `X.Y.Z`. In the repository the charts keep their directory names and the las
 `agentChart.version` into a staged copy when a release is cut, and the charts' helpers fix the
 resource names, so the rename changes nothing in a cluster.
 
+**A published version is immutable.** Once a tag has been published, its images, charts and tag are
+never rebuilt, re-pushed or moved: a change, however small, is the next patch version. Re-publishing
+changes the digests people pinned and leaves the signatures and SBOMs describing artifacts that no
+longer carry that version.
+
 There is currently one supported line: the latest release. No parallel long-term-support branch is
 maintained: a security fix ships in the next release of that line, not as a backport to an older
 tag. `docs/SUPPORT.md` states the supported Kubernetes range.
@@ -27,7 +32,8 @@ tag. `docs/SUPPORT.md` states the supported Kubernetes range.
 - **Ordinary development** happens on branches merged into `main` via a normal PR — gated by
   `.github/workflows/ci.yml` (fast, hermetic: Go build/vet/test, web typecheck/lint/build/design-lint,
   migration up/down pairing, dependency scanning).
-- **A release candidate** is a branch named `release/*` opened as a PR into `main`. This is the one PR
+- **A release candidate** is a branch named `release/*` (cut from `main`, or for a patch release
+  from the previous release's tag) opened as a PR into `main`. This is the one PR
   shape `.github/workflows/release.yml`'s `gate` job actually runs for (every other PR still triggers
   the workflow file, but the job's own `if:` skips it at zero cost — see that file's header comment).
   `gate` builds the real hub image, brings up a real hub+Postgres compose stack, stands up a real
@@ -44,12 +50,18 @@ pass. Until it is on, a failing `gate` is visible on the PR but does not block t
 
 ## Cutting a Release
 
-1. Branch `release/X.Y.Z` from `main`, add the `## [X.Y.Z]` section to `CHANGELOG.md` and any
-   upgrade notes to `docs/INSTALL.md` ("Upgrade"), and open a PR into `main`. `gate` runs on it.
-2. Merge, then tag the merge commit `vX.Y.Z` and push the tag. `publish` builds, scans, signs and
-   publishes everything, and creates the GitHub Release from the changelog section.
-3. Check the release: `helm show chart oci://registry-1.docker.io/nubestack/argus-hub-chart --version X.Y.Z`,
-   `cosign verify` one image ([SUPPORT.md](SUPPORT.md#verifying-a-release)), and the install script.
+[RELEASING.md](RELEASING.md) is the step-by-step runbook, from one-time setup to verifying the
+published release. In short:
+
+1. Branch `release/X.Y.Z`, run `scripts/release/version.py bump X.Y.Z`, write the `## [X.Y.Z]`
+   notes in `CHANGELOG.md`, and open a PR into `main`. `gate` runs on it.
+2. Merge, then tag the merge commit `vX.Y.Z` and push the tag. `publish` refuses a tag that does not
+   match the tree's version or has no release notes, then builds, scans, signs and publishes
+   everything, and creates the GitHub Release from the changelog section.
+3. Verify the release, then move the repository's image pins to it (below).
+
+`scripts/release/version.py` holds the one list of places the version is written, and CI's
+`release-version` job fails when any of them disagree.
 
 The workflow needs the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repository secrets to publish.
 
@@ -94,8 +106,10 @@ dumping/reloading the YAML — a dump/reload would silently discard the comments
 in the first place). It is idempotent: running it again with the same tag reproduces the same digest
 and touches nothing.
 
-Commit the resulting diff alongside the version bump, as one reviewable unit: "here is the new image,
-and here is the exact chart change that starts shipping it." A digest that is pinned once and never
+The release job pins the digests it just built into the charts it publishes, so a published chart is
+always pinned correctly. The repository's own `values.yaml` pins can only follow once those images
+exist: commit the diff in a small pull request after the release is out
+([RELEASING.md](RELEASING.md), step 11). A digest that is pinned once and never
 updated again is worse than no pin at all — it looks like a supply-chain control while silently
 preventing every future upgrade from ever reaching an installed chart. This script is what keeps the
 pin honest.

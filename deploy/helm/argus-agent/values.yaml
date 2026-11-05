@@ -316,12 +316,12 @@ replicaCount: 1
 image:
   repository: nubestack/argus-agent
   # The release tag, for reading. `digest` is what is pulled when set.
-  tag: "0.2.0"
+  tag: "0.2.1"
   # The release's image digest. A tag can be moved; a digest cannot, so a
   # chart version always installs the same image. Clear it to pull by `tag`
   # (for example a locally built image), and set pullPolicy to Always if the
   # tag moves.
-  digest: "sha256:71bcfca326d62550a7a379316e372589c1053ae606c8584baa8e8a1dc82fe895"
+  digest: "sha256:29e0b469a8df831dbf4460fa1ce763237f281c52653539be5ea20bc220678364"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []

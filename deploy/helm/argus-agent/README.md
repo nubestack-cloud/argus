@@ -12,7 +12,7 @@ the hub's **Clusters → Enroll a cluster** prints these commands with the value
 ```bash
 kubectl create namespace argus-system
 kubectl -n argus-system create secret generic argus-enrollment-token --from-literal=token=<token>
-helm install argus-agent oci://registry-1.docker.io/nubestack/argus-agent-chart --version 0.2.0 \
+helm install argus-agent oci://registry-1.docker.io/nubestack/argus-agent-chart --version 0.2.1 \
   -n argus-system \
   --set namespace.create=false \
   --set hub.apiUrl=https://argus.example.com \
@@ -57,7 +57,7 @@ repository.
 - **Moving the tunnel.** `hub.tunnelEndpoint` points an enrolled agent at a different tunnel address
   (for example from a dedicated port to the hub's Ingress) without enrolling again.
 
-Every value is documented in `helm show values oci://registry-1.docker.io/nubestack/argus-agent-chart --version 0.2.0`.
+Every value is documented in `helm show values oci://registry-1.docker.io/nubestack/argus-agent-chart --version 0.2.1`.
 
 User guide (installation and use): <https://argus.nubestack.com/>. Install and upgrade reference:
 [`docs/INSTALL.md`](https://github.com/nubestack-cloud/argus/blob/main/docs/INSTALL.md).

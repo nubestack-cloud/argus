@@ -7,7 +7,7 @@ cluster it is installed in, so the hub watches that cluster from the start.
 ## Install
 
 ```bash
-helm install argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --version 0.2.0 \
+helm install argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --version 0.2.1 \
   -n argus-system --create-namespace \
   --set ingress.host=argus.example.com \
   --set ingress.clusterIssuer=letsencrypt
@@ -89,7 +89,7 @@ Migrations run in a `migrate` init container before the hub starts, on install a
 ## Check before installing
 
 ```bash
-helm template argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --version 0.2.0 \
+helm template argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --version 0.2.1 \
   -n argus-system --set ingress.host=argus.example.com \
   | kubectl apply --dry-run=server -n argus-system -f -
 ```

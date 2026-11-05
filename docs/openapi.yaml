@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ARGUS Hub API
-  version: "0.2.0"
+  version: "0.2.1"
   description: |
     Hand-authored, hand-verified OpenAPI 3.1 contract for the hub's public HTTP API
     (`internal/api`, routes registered in `internal/api/server.go`).

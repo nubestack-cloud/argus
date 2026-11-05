@@ -22,10 +22,10 @@ hostnames, IP addresses and repository owners replaced by placeholders.</sub>
 
 ## Quick start
 
-With Helm 3.8+ and an ingress controller:
+With Helm 3.14+ and an ingress controller:
 
 ```bash
-helm install argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --version 0.2.0 \
+helm install argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --version 0.2.1 \
   -n argus-system --create-namespace \
   --set ingress.host=argus.example.com --set ingress.clusterIssuer=letsencrypt
 ```

@@ -13,7 +13,7 @@ spec:
   source:
     repoURL: registry-1.docker.io/nubestack   # OCI: no oci:// prefix in Argo CD
     chart: argus-hub-chart
-    targetRevision: 0.2.0
+    targetRevision: 0.2.1
     helm:
       releaseName: argus-hub
       valuesObject:

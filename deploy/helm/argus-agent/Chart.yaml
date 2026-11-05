@@ -5,8 +5,8 @@ description: >-
   problems and answers read-only investigation requests; optionally applies
   approved fixes under a separate, opt-in identity.
 type: application
-version: 0.2.0
-appVersion: "0.2.0"
+version: 0.2.1
+appVersion: "0.2.1"
 kubeVersion: ">=1.29.0-0"
 home: https://argus.nubestack.com/
 sources:

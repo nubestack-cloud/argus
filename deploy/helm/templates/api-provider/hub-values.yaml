@@ -1,6 +1,6 @@
 # Values for argus-hub-chart:
 #   helm upgrade --install argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart \
-#     --version 0.2.0 -n argus-system --create-namespace -f hub-values.yaml
+#     --version 0.2.1 -n argus-system --create-namespace -f hub-values.yaml
 # Images are pinned by the chart version; leave image.* unset.
 # The UI, the API and the agents' tunnel are all served at this host.
 ingress:

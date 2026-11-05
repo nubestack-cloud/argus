@@ -85,7 +85,7 @@ The procedure is in [INSTALL.md](INSTALL.md#upgrading). What it relies on:
 ## Verifying a Release
 
 ```bash
-cosign verify docker.io/nubestack/argus-hub:0.2.0 \
+cosign verify docker.io/nubestack/argus-hub:0.2.1 \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp '^https://github.com/nubestack-cloud/argus/\.github/workflows/release\.yml@refs/tags/v'
 ```

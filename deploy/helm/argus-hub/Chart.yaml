@@ -5,8 +5,8 @@ description: >-
   for a fleet of Kubernetes clusters. Serves the web UI, the API and the agents'
   tunnel from one address, and can run its own Postgres.
 type: application
-version: 0.2.0
-appVersion: "0.2.0"
+version: 0.2.1
+appVersion: "0.2.1"
 kubeVersion: ">=1.29.0-0"
 home: https://argus.nubestack.com/
 sources:
@@ -19,7 +19,7 @@ maintainers:
 # watches the cluster it runs in. charts/argus-agent links to ../argus-agent.
 dependencies:
   - name: argus-agent
-    version: "0.2.0"
+    version: "0.2.1"
     alias: localAgent
     condition: localAgent.enabled
 annotations:

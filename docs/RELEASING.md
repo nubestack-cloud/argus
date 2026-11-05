@@ -122,16 +122,32 @@ Only `main` deploys the site, so the guide never names a version that does not e
 - **Re-publish a version.** Once `0.3.0` is out, its images, charts and tag are fixed. Anything that
   needs changing is `0.3.1`. Rebuilding under the same version changes the digests people pinned and
   leaves the signatures pointing at the old ones.
-- **Move or delete a pushed tag.**
+- **Move or delete a tag once its release has published anything** (an image, a chart or a GitHub
+  Release). The one exception is below: a run that failed before publishing.
 - **Build or push release images by hand.** Only the release job signs them and produces SBOMs.
 - **Edit the version by hand.** `scripts/release/version.py bump` knows every place it is written,
   and CI fails if they disagree.
 
 ## When something goes wrong
 
-**The publish job failed partway.** If nobody can have installed the release yet (you have not
-announced it, and it failed before or during publishing), fix the cause and use **Re-run failed
-jobs** on the same run. Otherwise, cut a patch release.
+**The release run failed before publishing anything.** Check that nothing carries the version:
+`docker buildx imagetools inspect nubestack/argus-hub:X.Y.Z` reports not found, and there is no
+GitHub Release for the tag. Then:
+
+- If the cause was outside the repository (a registry outage, an expired token), fix it and use
+  **Re-run failed jobs** on the same run.
+- If the fix is a change to the repository, including the workflow itself, a re-run cannot pick it
+  up: it runs the tagged commit's files. Merge the fix into `main`, then move the tag to the new
+  merge commit, which starts a fresh run:
+  ```bash
+  git checkout main && git pull
+  git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z
+  git tag -a vX.Y.Z -m "ARGUS X.Y.Z" && git push origin vX.Y.Z
+  ```
+
+**The publish job failed after pushing something.** If nobody can have installed the release yet
+(you have not announced it), fix the cause and use **Re-run failed jobs** on the same run. Otherwise,
+cut a patch release.
 
 **A published release is broken.** Cut a patch release with the fix. Edit the broken release's
 GitHub notes to start with "Superseded by X.Y.Z, which fixes ...". Do not delete it: people may have

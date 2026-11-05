@@ -11,12 +11,12 @@ fullnameOverride: ""
 image:
   repository: nubestack/argus-hub
   # The release tag, for reading. `digest` is what is pulled when set.
-  tag: "0.2.0"
+  tag: "0.2.1"
   # The release's image digest. A tag can be moved (by mistake, or by a
   # compromised publishing credential); a digest cannot, so a chart version
   # always installs the same image. Clear it to pull by `tag`, for example a
   # locally built image, and set pullPolicy to Always if the tag moves.
-  digest: "sha256:b414b3624e39df12e1f10468ff4f1cde888734dbc85559a397becf4d4c6ff153"
+  digest: "sha256:da1f99508e34c0684fd2f5c805759f1e17e34b6ac6b032570b3707eed87a5906"
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
@@ -47,7 +47,7 @@ agentChart:
 # (repository@sha256:...). A cluster whose agent chart enables selfUpgrade gets
 # an "Upgrade agent" action on its Agent tab when it runs anything else. Empty
 # means the hub offers no upgrade and the tab keeps showing the helm command.
-agentImage: "nubestack/argus-agent@sha256:71bcfca326d62550a7a379316e372589c1053ae606c8584baa8e8a1dc82fe895"
+agentImage: "nubestack/argus-agent@sha256:29e0b469a8df831dbf4460fa1ce763237f281c52653539be5ea20bc220678364"
 
 # This cluster's own agent, installed with the hub and enrolled and accepted
 # automatically, so the hub watches the cluster it runs in from the start. It
@@ -275,9 +275,9 @@ cliRunner:
   enabled: auto
   image:
     repository: nubestack/argus-cli-runner
-    tag: "0.2.0"
+    tag: "0.2.1"
     # Pinned by digest, like the hub image.
-    digest: "sha256:d9f4e6368afd4a14dd1970c93e4625c6c149c20c5b6a9028733a81e06c632d6a"
+    digest: "sha256:49a4f798ad67d1a0c087c45ae59fe0a8a5fc64215f2193ae698b2e8816fbf6c6"
     pullPolicy: IfNotPresent
   # Shared hub<->runner secret. Generated when empty.
   token: ""

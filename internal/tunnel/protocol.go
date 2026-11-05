@@ -569,7 +569,7 @@ type FindingQueueStatus struct {
 // test "pinned" the two together by hardcoding the same string a third time —
 // which would have kept passing after a release bumped the agent and left the
 // policy behind, guarding nothing. One constant, no copies, drift impossible.
-const AgentBuildVersion = "0.2.0"
+const AgentBuildVersion = "0.2.1"
 
 // InventoryDelta carries a whole ClusterFacts payload. FullResync is always
 // true, from both of the agent's senders: one on connect, one on a timer

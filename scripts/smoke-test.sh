@@ -15,7 +15,7 @@ set -uo pipefail
 
 API="${ARGUS_API_URL:-http://localhost:8080}"
 COMPOSE_FILE="${ARGUS_COMPOSE_FILE:-$(dirname "$0")/../deploy/compose/docker-compose.yaml}"
-HUB_IMAGE="${ARGUS_HUB_IMAGE:-nubestack/argus-hub:${ARGUS_VERSION:-0.2.0}}"  # the image compose runs
+HUB_IMAGE="${ARGUS_HUB_IMAGE:-nubestack/argus-hub:${ARGUS_VERSION:-0.2.1}}"  # the image compose runs
 
 # BACKLOG.md E4/BUGS.md 91: the disposable, safe-to-abuse `kind` cluster
 # (context kind-argus-disposable, RUNBOOK.md's "Standing test infrastructure"

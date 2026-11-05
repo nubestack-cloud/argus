@@ -32,7 +32,7 @@ spec:
       source:
         repoURL: registry-1.docker.io/nubestack
         chart: argus-agent-chart
-        targetRevision: 0.2.0
+        targetRevision: 0.2.1
         helm:
           releaseName: argus-agent
           valuesObject:

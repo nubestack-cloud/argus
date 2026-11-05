@@ -16,7 +16,7 @@ You need:
 - a Kubernetes cluster for the hub, version 1.29 or newer (1.30 or newer if ARGUS may change
   anything: remediation's admission policies need it). Any conformant distribution works, OpenShift
   included: the chart detects OpenShift and lets it assign the pods' user IDs;
-- Helm 3.8 or newer on your machine;
+- Helm 3.14 or newer on your machine;
 - an ingress controller in that cluster (or a Gateway API Gateway: see
   [Gateway API](#gateway-api-instead-of-ingress));
 - a hostname for the hub, such as `argus.example.com`, that your browser and your other clusters can
@@ -46,7 +46,7 @@ Decide two things now, because they are hard to change later:
 ## Step 1: Install the hub
 
 ```bash
-helm install argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --version 0.2.0 \
+helm install argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --version 0.2.1 \
   -n argus-system --create-namespace \
   --set ingress.host=argus.example.com \
   --set ingress.clusterIssuer=letsencrypt
@@ -124,7 +124,7 @@ printf '%s' "$TOKEN" > ~/.argus/model-credential && unset TOKEN && chmod 600 ~/.
 Then upgrade the hub with it. For an Anthropic API key:
 
 ```bash
-helm upgrade argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --version 0.2.0 \
+helm upgrade argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --version 0.2.1 \
   -n argus-system --reset-then-reuse-values \
   --set-file cliRunner.modelCredential.anthropicApiKey=$HOME/.argus/model-credential
 ```
@@ -155,7 +155,7 @@ address and a one-time token already filled in. Run them against the new cluster
 ```bash
 kubectl create namespace argus-system
 kubectl -n argus-system create secret generic argus-enrollment-token --from-literal=token=<token>
-helm install argus-agent oci://registry-1.docker.io/nubestack/argus-agent-chart --version 0.2.0 \
+helm install argus-agent oci://registry-1.docker.io/nubestack/argus-agent-chart --version 0.2.1 \
   -n argus-system --set namespace.create=false \
   --set hub.apiUrl=https://argus.example.com \
   --set enrollment.tokenSecretRef.name=argus-enrollment-token \
@@ -275,7 +275,7 @@ hub watches its own cluster; other clusters cannot reach it.
 Attach the hub to a Gateway you run, instead of setting `ingress.host`:
 
 ```bash
-helm install argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --version 0.2.0 \
+helm install argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --version 0.2.1 \
   -n argus-system --create-namespace \
   --set httpRoute.host=argus.example.com \
   --set 'httpRoute.parentRefs[0].name=<gateway>' \
@@ -288,7 +288,7 @@ WebSocket connections to stay open: agents send a heartbeat every 30 seconds.
 
 ### All the options
 
-Every value is documented in `helm show values oci://registry-1.docker.io/nubestack/argus-hub-chart --version 0.2.0`,
+Every value is documented in `helm show values oci://registry-1.docker.io/nubestack/argus-hub-chart --version 0.2.1`,
 and both charts validate values against a schema. This cluster's agent takes every agent-chart value
 under `localAgent.` (for example `localAgent.displayName=hub-cluster`); `localAgent.enabled=false`
 turns it off.
@@ -334,7 +334,7 @@ and limited to the namespaces you list:
 
 ```bash
 helm --kube-context <ctx> upgrade argus-agent oci://registry-1.docker.io/nubestack/argus-agent-chart \
-  --version 0.2.0 -n argus-system --reset-then-reuse-values \
+  --version 0.2.1 -n argus-system --reset-then-reuse-values \
   --set remediate.enabled=true --set 'remediate.namespaces={payments,checkout}'
 ```
 
@@ -380,7 +380,7 @@ appPassword=<app-password>
 
 ```bash
 kubectl -n argus-system create secret generic argus-db --from-env-file=argus-db.env && rm argus-db.env
-helm install argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --version 0.2.0 \
+helm install argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --version 0.2.1 \
   -n argus-system --set ingress.host=argus.example.com \
   --set postgres.mode=external --set postgres.external.existingSecret=argus-db \
   --set postgres.external.appPasswordKey=appPassword
@@ -435,7 +435,7 @@ Growing the bundled database's volume works only if its StorageClass allows expa
 kubectl -n argus-system patch pvc data-argus-hub-postgres-0 \
   -p '{"spec":{"resources":{"requests":{"storage":"100Gi"}}}}'
 kubectl -n argus-system delete statefulset argus-hub-postgres --cascade=orphan   # Postgres keeps running
-helm upgrade argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --version 0.2.0 \
+helm upgrade argus-hub oci://registry-1.docker.io/nubestack/argus-hub-chart --version 0.2.1 \
   -n argus-system --reset-then-reuse-values --set postgres.bundled.persistence.size=100Gi
 ```
 

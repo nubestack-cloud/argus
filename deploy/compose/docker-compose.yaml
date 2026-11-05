@@ -58,7 +58,7 @@ services:
   # holds is exactly what ALTER ROLE needs. `hub-api` is the long-running service.
 
   hub-migrate:
-    image: nubestack/argus-hub:${ARGUS_VERSION:-0.2.0}
+    image: nubestack/argus-hub:${ARGUS_VERSION:-0.2.1}
     command: ["migrate"]
     environment:
       ARGUS_MIGRATE_DATABASE_URL: postgres://postgres:postgres@postgres:5432/argus?sslmode=disable
@@ -71,7 +71,7 @@ services:
     # The release tag, ARGUS_VERSION in .env (default: this file's release).
     # To upgrade, change ARGUS_VERSION and run `docker compose pull` then
     # `up -d`. For a local build, tag it and set ARGUS_VERSION to that tag.
-    image: nubestack/argus-hub:${ARGUS_VERSION:-0.2.0}
+    image: nubestack/argus-hub:${ARGUS_VERSION:-0.2.1}
     command: ["api"]
     environment:
       ARGUS_DATABASE_URL: postgres://argus_app:dev-local-password@postgres:5432/argus?sslmode=disable
@@ -232,7 +232,7 @@ services:
   # key, none of which a Node dependency tree has any business sitting next to.
   cli-runner:
     profiles: ["cli-runner"]
-    image: nubestack/argus-cli-runner:${ARGUS_VERSION:-0.2.0}
+    image: nubestack/argus-cli-runner:${ARGUS_VERSION:-0.2.1}
     environment:
       ARGUS_CLI_RUNNER_ADDR: ":8090"
       # Must match hub-api's own ARGUS_CLI_RUNNER_TOKEN above.

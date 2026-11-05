@@ -54,6 +54,11 @@ install and upgrade guides are in `docs/`. `lld/14-adrs.md` holds both ADR and D
 registers; `lld/01-threat-model.md` holds the security boundaries. Old work-item, bug, HLD, and LLD
 references in comments are historical provenance (`lld/README.md`); do not add new references to them.
 
+`CONTRIBUTING.md` is the contributor's path to a merged PR; `docs/RELEASING.md` is how a release is
+cut. Never edit the release version by hand (`scripts/release/version.py bump`, which CI checks), and
+never build, push or re-tag release images or charts by hand: only the tag-triggered release job
+publishes, and a published version is never re-published (the fix is the next patch version).
+
 ## The two halves of the system
 
 **Hub (server)** — `cmd/hub/main.go` + almost everything under `internal/`: `internal/api` (HTTP

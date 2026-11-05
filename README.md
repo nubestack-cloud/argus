@@ -269,6 +269,8 @@ After installing:
 | How to install and use ARGUS, step by step | [The user guide](https://argus.nubestack.com/) |
 | How the system is shaped | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | How to develop and test it | [RUNBOOK.md](RUNBOOK.md) |
+| How to contribute a change | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| How a release is cut (maintainers) | [docs/RELEASING.md](docs/RELEASING.md) |
 | Prometheus metrics the hub exposes | [docs/METRICS.md](docs/METRICS.md) |
 | The API | [docs/openapi.yaml](docs/openapi.yaml) |
 | Security boundaries and threat model | [lld/01-threat-model.md](lld/01-threat-model.md) |
@@ -309,7 +311,8 @@ cd web && npm run design-lint    # the mechanically checkable design rules
 ```
 
 The web UI is embedded in the hub binary, so a frontend change needs a hub image rebuild to be
-served. Local setup and testing against a real cluster are in [RUNBOOK.md](RUNBOOK.md).
+served. Local setup and testing against a real cluster are in [RUNBOOK.md](RUNBOOK.md). To send a
+change, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

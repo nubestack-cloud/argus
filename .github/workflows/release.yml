@@ -151,6 +151,13 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
+      # Before anything is built or pushed: the tag must name the version the
+      # tree is at, everywhere it is written, and CHANGELOG.md must hold this
+      # release's notes (the GitHub Release is made from them). A mismatch
+      # here used to surface as published artifacts that disagree.
+      - name: the tag matches the tree, and the release notes exist
+        run: python3 scripts/release/version.py check --tag "$GITHUB_REF_NAME"
+
       # The images ship THIRD_PARTY_NOTICES.md; refuse to publish it stale.
       - uses: actions/setup-go@v5
         with:

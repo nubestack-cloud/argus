@@ -59,9 +59,12 @@ func (s *Server) DrainWebSockets(ctx context.Context) (open int, drained bool) {
 	if s.wsDrain == nil {
 		return 0, true
 	}
+	// Count before signalling: once wsDrain is closed, a connection can send
+	// its close frame and deregister before the count is taken, and the
+	// result would under-report what was open when the drain started.
+	open = int(s.wsOpen.Load())
 	s.wsDrainOnce.Do(func() { close(s.wsDrain) })
 
-	open = int(s.wsOpen.Load())
 	done := make(chan struct{})
 	go func() {
 		s.wsActive.Wait()
